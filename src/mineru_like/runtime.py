@@ -1,4 +1,5 @@
 """Lifecycle and OpenAI-compatible vision requests for the inference server."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +12,7 @@ import secrets
 import signal
 import socket
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -51,7 +53,12 @@ class InferenceRuntime:
 
     async def _check_version(self, binary: Path) -> None:
         try:
-            proc = await asyncio.create_subprocess_exec(str(binary), "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec(
+                str(binary),
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
             try:
                 out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
             except (TimeoutError, asyncio.CancelledError):
@@ -64,13 +71,20 @@ class InferenceRuntime:
             raise InferenceError("Timed out checking inference binary version") from exc
         version = out + err
         if proc.returncode != 0 or not re.search(rb"\bbuild 12110\b.*\bcd959bae9\b", version):
-            raise InferenceError("Managed inference requires llama-server build 12110 (commit cd959bae9)")
+            raise InferenceError(
+                "Managed inference requires llama-server build 12110 (commit cd959bae9)"
+            )
 
     async def _select_device(self, binary: Path) -> str:
         if self.settings.device == "cpu":
             return "cpu"
         try:
-            proc = await asyncio.create_subprocess_exec(str(binary), "--list-devices", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec(
+                str(binary),
+                "--list-devices",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
         except (TimeoutError, asyncio.CancelledError) as exc:
             proc.kill()
@@ -80,7 +94,9 @@ class InferenceRuntime:
             raise InferenceError("Timed out checking inference devices") from exc
         except OSError as exc:
             raise InferenceError(f"Cannot run inference binary: {exc}") from exc
-        cuda = proc.returncode == 0 and bool(re.search(rb"(?m)^\s*CUDA\d+\s*:", out + err, re.IGNORECASE))
+        cuda = proc.returncode == 0 and bool(
+            re.search(rb"(?m)^\s*CUDA\d+\s*:", out + err, re.IGNORECASE)
+        )
         if not cuda and self.settings.device == "cuda":
             raise InferenceError("CUDA requested but no CUDA device is available to llama-server")
         if not cuda and self.settings.device == "auto":
@@ -128,7 +144,15 @@ class InferenceRuntime:
 
     def _make_client(self, base_url: str, key: str | None) -> httpx.AsyncClient:
         headers = {"Authorization": f"Bearer {key}"} if key else {}
-        return httpx.AsyncClient(base_url=base_url.rstrip("/") + "/", headers=headers, timeout=self.settings.request_timeout, trust_env=False)
+        base_url = base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        return httpx.AsyncClient(
+            base_url=base_url + "/",
+            headers=headers,
+            timeout=self.settings.request_timeout,
+            trust_env=False,
+        )
 
     async def _check_models(self):
         assert self._client is not None
@@ -138,7 +162,9 @@ class InferenceRuntime:
         if not isinstance(data, list) or not data:
             raise InferenceError("Inference server exposes no models")
         if self.settings.model_alias:
-            if not any(m.get("id") == self.settings.model_alias for m in data if isinstance(m, dict)):
+            if not any(
+                m.get("id") == self.settings.model_alias for m in data if isinstance(m, dict)
+            ):
                 raise InferenceError("Requested model alias is not available")
         elif self.settings.mode == "external":
             self._alias = data[0]["id"]
@@ -150,18 +176,56 @@ class InferenceRuntime:
         for _ in range(5):
             port, key = self._free_port(), secrets.token_urlsafe(32)
             self._log = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115 -- closed during lifecycle cleanup
-            command = [str(binary), "--model", str(model), "--mmproj", str(mmproj),
-                       "--host", "127.0.0.1", "--port", str(port), "--api-key", key,
-                       "--alias", self._alias, "--parallel", "1", "--no-cont-batching",
-                       "--ctx-size", str(s.context_size), "--batch-size", str(s.batch_size),
-                       "--ubatch-size", str(s.ubatch_size), "--reasoning", "off", "--no-webui",
-                       "--no-context-shift", "--cache-ram", "0", "--no-cache-prompt", "--fit", "off",
-                       "--gpu-layers", "0" if self.device == "cpu" else "all", "--flash-attn", "on",
-                       "--cache-type-k", s.kv_cache, "--cache-type-v", s.kv_cache,
-                       "--image-min-tokens", str(s.image_min_tokens), "--image-max-tokens", str(s.image_max_tokens)]
+            command = [
+                str(binary),
+                "--model",
+                str(model),
+                "--mmproj",
+                str(mmproj),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--api-key",
+                key,
+                "--alias",
+                self._alias,
+                "--parallel",
+                "1",
+                "--no-cont-batching",
+                "--ctx-size",
+                str(s.context_size),
+                "--batch-size",
+                str(s.batch_size),
+                "--ubatch-size",
+                str(s.ubatch_size),
+                "--reasoning",
+                "off",
+                "--no-webui",
+                "--no-context-shift",
+                "--cache-ram",
+                "0",
+                "--no-cache-prompt",
+                "--fit",
+                "off",
+                "--gpu-layers",
+                "0" if self.device == "cpu" else "all",
+                "--flash-attn",
+                "on",
+                "--cache-type-k",
+                s.kv_cache,
+                "--cache-type-v",
+                s.kv_cache,
+                "--image-min-tokens",
+                str(s.image_min_tokens),
+                "--image-max-tokens",
+                str(s.image_max_tokens),
+            ]
             if self.device == "cpu":
                 command += ["--device", "none", "--no-mmproj-offload", "--no-kv-offload"]
-            self._process = await asyncio.create_subprocess_exec(*command, stdout=self._log, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+            self._process = await asyncio.create_subprocess_exec(
+                *command, stdout=self._log, stderr=asyncio.subprocess.STDOUT, start_new_session=True
+            )
             self._client = self._make_client(f"http://127.0.0.1:{port}", key)
             deadline = asyncio.get_running_loop().time() + s.startup_timeout
             while asyncio.get_running_loop().time() < deadline:
@@ -178,7 +242,10 @@ class InferenceRuntime:
             detail = self._log.read()[-4000:].decode(errors="replace")
             last_error = f"Inference server did not become ready: {detail}"
             await self._cleanup()
-            if "address already in use" not in detail.lower() and "failed to bind" not in detail.lower():
+            if (
+                "address already in use" not in detail.lower()
+                and "failed to bind" not in detail.lower()
+            ):
                 break
         raise InferenceError(last_error or "Inference server failed to start")
 
@@ -192,46 +259,112 @@ class InferenceRuntime:
         for image in images:
             path = self._asset(image, "image")
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()}})
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
+                    },
+                }
+            )
         content.append({"type": "text", "text": prompt})
         async with self._lock:
             if self._closing:
                 raise InferenceError("Inference runtime is shutting down")
-            if self.state != "ready" or (self._process is not None and self._process.returncode is not None):
+            if self.state != "ready" or (
+                self._process is not None and self._process.returncode is not None
+            ):
                 await self._start_locked()
             assert self._client is not None
+            started = time.monotonic()
+            finish_reason, usage = None, {}
             try:
                 if self.settings.mode == "managed":
-                    tokens = await self._client.post("tokenize", json={"content": prompt, "add_special": True})
+                    tokens = await self._client.post(
+                        "tokenize", json={"content": prompt, "add_special": True}
+                    )
                     tokens.raise_for_status()
                     count = len(tokens.json()["tokens"])
-                    if count + len(images) * self.settings.image_max_tokens + limit + 256 > self.settings.context_size:
-                        raise InferenceError("Prompt, image allowance and output exceed the context size")
-                response = await self._client.post("v1/chat/completions", json={"model": self._alias, "messages": [{"role": "user", "content": content}], "temperature": 0, "max_tokens": limit, "stream": False, "chat_template_kwargs": {"enable_thinking": False}})
+                    if (
+                        count + len(images) * self.settings.image_max_tokens + limit + 256
+                        > self.settings.context_size
+                    ):
+                        raise InferenceError(
+                            "Prompt, image allowance and output exceed the context size"
+                        )
+                async with asyncio.timeout(self.settings.request_timeout):
+                    response = await self._client.post(
+                        "v1/chat/completions",
+                        json={
+                            "model": self._alias,
+                            "messages": [{"role": "user", "content": content}],
+                            "temperature": 0,
+                            "max_tokens": limit,
+                            "stream": False,
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        },
+                    )
                 response.raise_for_status()
-                choice = response.json()["choices"][0]
-                if choice.get("finish_reason") != "stop":
-                    raise InferenceError(f"Incomplete inference response: finish_reason={choice.get('finish_reason')!r}")
+                payload = response.json()
+                usage = payload.get("usage") or {}
+                choice = payload["choices"][0]
+                finish_reason = choice.get("finish_reason")
+                if finish_reason != "stop":
+                    raise InferenceError(
+                        f"Incomplete inference response: finish_reason={choice.get('finish_reason')!r}"
+                    )
                 result = choice["message"]["content"]
                 if not isinstance(result, str):
                     raise InferenceError("Inference response has no text content")
                 return result
-            except (asyncio.CancelledError, httpx.RequestError):
+            except (asyncio.CancelledError, TimeoutError, httpx.RequestError):
                 # An owned server may continue generating after disconnect. Restart it
                 # before accepting another job; never terminate an external server.
                 if self.settings.mode == "managed":
-                    await self._cleanup()
-                    self.state = "stopped"
+                    try:
+                        await self._cleanup()
+                    finally:
+                        self.state = "stopped"
                 raise
             except httpx.HTTPStatusError as exc:
                 detail = exc.response.text[:500]
                 if self.settings.api_key:
                     detail = detail.replace(self.settings.api_key, "[redacted]")
-                raise InferenceError(f"Inference server returned HTTP {exc.response.status_code}: {detail}") from exc
+                raise InferenceError(
+                    f"Inference server returned HTTP {exc.response.status_code}: {detail}"
+                ) from exc
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 raise InferenceError("Malformed inference response") from exc
+            finally:
+                logging.getLogger(__name__).info(
+                    "Inference finished in %.2fs (images=%d, output_limit=%d, finish_reason=%s, usage=%s)",
+                    time.monotonic() - started,
+                    len(images),
+                    limit,
+                    finish_reason,
+                    {
+                        key: usage.get(key)
+                        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    }
+                    if isinstance(usage, dict)
+                    else {},
+                )
 
     async def _cleanup(self):
+        # Shield the entire ownership cleanup, not just one wait: repeated
+        # cancellation must not interrupt process termination or reaping.
+        task = asyncio.create_task(self._cleanup_owned())
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _cleanup_owned(self):
         if self._client is not None:
             await self._client.aclose()
             self._client = None

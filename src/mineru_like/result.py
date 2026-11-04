@@ -71,7 +71,7 @@ class DocumentResult:
             pure = PurePosixPath(name)
             if (
                 pure.is_absolute()
-                or any(p in {".", ".."} for p in name.split("/"))
+                or any(p in {"", ".", ".."} for p in name.split("/"))
                 or "\\" in name
                 or ":" in name
                 or "\0" in name
@@ -88,6 +88,17 @@ class DocumentResult:
                     raise ValueError("Block type/content must be strings")
                 if block.image_source and block.image_source not in self.assets:
                     raise ValueError(f"Missing referenced asset: {block.image_source}")
+                if block.image_source and PurePosixPath(block.image_source).suffix.lower() not in {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".webp",
+                    ".gif",
+                    ".svg",
+                }:
+                    raise ValueError("Referenced image format is unsupported by the plugin adapter")
+                if block.level is not None and (type(block.level) is not int or block.level < 1):
+                    raise ValueError("Title level must be a positive integer")
                 if not all(isinstance(s, str) for s in block.captions + block.footnotes):
                     raise ValueError("Caption/footnote content must be strings")
 
@@ -137,10 +148,12 @@ class DocumentResult:
                 with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                     archive.writestr("markdown.md", markdown)
                     archive.writestr(
-                        "structured_content.json", json.dumps(self.structured(), ensure_ascii=False)
+                        "structured_content.json",
+                        json.dumps(self.structured(), ensure_ascii=False, allow_nan=False),
                     )
                     archive.writestr(
-                        "diagnostics.json", json.dumps(self.diagnostics, ensure_ascii=False)
+                        "diagnostics.json",
+                        json.dumps(self.diagnostics, ensure_ascii=False, allow_nan=False),
                     )
                     for name, asset in self.assets.items():
                         archive.write(asset, name)

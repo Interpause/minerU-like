@@ -36,7 +36,9 @@ def test_plugin_artifact_retains_generated_caption(tmp_path):
         assert archive.read("images/figure.png") == image.read_bytes()
 
 
-@pytest.mark.parametrize("name", ["../escape.png", "/absolute.png", "images/./a.png", "C:a.png"])
+@pytest.mark.parametrize(
+    "name", ["../escape.png", "/absolute.png", "images/./a.png", "C:a.png", "images//a.png", ""]
+)
 def test_unsafe_assets_rejected(tmp_path, name):
     with pytest.raises(ValueError, match="Unsafe"):
         DocumentResult([Page(0, [])], {name: Path(__file__)}).write_zip(tmp_path / "x.zip")
@@ -48,6 +50,13 @@ def test_missing_asset_cannot_publish(tmp_path):
             [Page(0, [Block("image", "", image_source="images/missing.png")])]
         ).write_zip(tmp_path / "x.zip")
     assert not (tmp_path / "x.zip").exists()
+
+
+def test_non_json_metadata_cannot_publish(tmp_path):
+    result = DocumentResult([Page(0, [], metadata={"invalid": float("nan")})])
+    with pytest.raises(ValueError, match="Out of range"):
+        result.write_zip(tmp_path / "result.zip")
+    assert not (tmp_path / "result.zip").exists()
 
 
 def test_titles_and_math_keep_plugin_semantics():

@@ -112,7 +112,7 @@ def main():
         if name == "submit":
             cmd.add_argument("input", type=Path)
             cmd.add_argument("--ocr", action="store_true")
-            cmd.add_argument("--tier", default="standard", choices=["standard"])
+            cmd.add_argument("--tier", default="standard", choices=["standard", "advanced"])
             cmd.add_argument("--wait", action="store_true")
             cmd.add_argument("--timeout", type=float, default=7200)
             cmd.add_argument("--output", type=Path, default=Path("result.zip"))
@@ -122,6 +122,7 @@ def main():
                 cmd.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         if args.command == "download-asset":
             download_asset(args.url, args.sha256, args.output)

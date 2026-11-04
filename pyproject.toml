@@ -2,6 +2,7 @@
 name = "mineru-like"
 version = "0.1.0"
 description = "Local OvisOCR3 document parsing with Zotero-compatible APIs"
+readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -25,6 +26,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mineru_like"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"licenses" = "mineru_like/licenses"
+"THIRD_PARTY_NOTICES.md" = "mineru_like/THIRD_PARTY_NOTICES.md"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
