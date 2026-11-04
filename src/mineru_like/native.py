@@ -8,7 +8,9 @@ import hashlib
 import html
 import json
 import re
+import xml.etree.ElementTree as ET
 import zipfile
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 
@@ -33,6 +35,97 @@ SUFFIXES = {
     "tsv",
 }
 ALIASES = {"htm": "html", "shtml": "html", "mht": "mhtml"}
+
+
+class _InlineSVGCounter(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.depth = 0
+        self.count = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "svg":
+            if self.depth == 0:
+                self.count += 1
+            self.depth += 1
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "svg" and self.depth == 0:
+            self.count += 1
+
+    def handle_endtag(self, tag):
+        if tag == "svg" and self.depth:
+            self.depth -= 1
+
+
+def _inline_svg_count(path: Path, ext: str) -> int:
+    if ext == "html":
+        documents = [path.read_bytes()]
+    elif ext == "epub" and zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            documents = []
+            for info in archive.infolist():
+                if info.filename.lower().endswith((".html", ".htm", ".xhtml")):
+                    if info.file_size > 20_000_000:
+                        raise ValueError(
+                            "Unsupported source content: EPUB document is too large to inspect"
+                        )
+                    documents.append(archive.read(info))
+    else:
+        return 0
+    count = 0
+    for document in documents:
+        parser = _InlineSVGCounter()
+        parser.feed(document.decode("utf-8", errors="replace"))
+        count += parser.count
+    return count
+
+
+def _inference_image(source: Path, workdir: Path) -> Path:
+    """Rasterize a self-contained SVG for inference, retaining the original asset."""
+    if source.suffix.lower() != ".svg":
+        return source
+    import resvg_py
+    from docvortex.foundation._image_payload import _parse_svg_root_strict
+    from docvortex.foundation._svg_raster import _intrinsic_size
+    from PIL import Image
+
+    try:
+        root = _parse_svg_root_strict(source.read_bytes())
+        for node in root.iter():
+            name = node.tag.rsplit("}", 1)[-1].lower()
+            if name in {"image", "script", "foreignobject"}:
+                raise ValueError("unsupported SVG element")
+            values = list(node.attrib.values()) + ([node.text or ""] if name == "style" else [])
+            for key, value in node.attrib.items():
+                if key.rsplit("}", 1)[-1].lower() == "href" and not value.strip().startswith("#"):
+                    raise ValueError("external SVG reference")
+            for value in values:
+                if "\\" in value or re.search(r"@import|url\s*\(\s*['\"]?(?!#)", value, re.I):
+                    raise ValueError("external SVG reference")
+        size = _intrinsic_size(root)
+        if not size:
+            raise ValueError("SVG has no bounded dimensions")
+        width, height = size
+        scale = min(1.0, 2048 / width, 2048 / height, (4_000_000 / (width * height)) ** 0.5)
+        width, height = max(1, int(width * scale)), max(1, int(height * scale))
+        png = resvg_py.svg_to_bytes(
+            svg_string=ET.tostring(root, encoding="unicode"), width=width, height=height
+        )
+        with Image.open(BytesIO(png)) as rendered:
+            rgba = rendered.convert("RGBA")
+            background = Image.new("RGB", rgba.size, "white")
+            background.paste(rgba, mask=rgba.getchannel("A"))
+            target = (
+                workdir / "inference" / (hashlib.sha256(source.read_bytes()).hexdigest() + ".png")
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            background.save(target, format="PNG")
+        return target
+    except Exception as exc:
+        raise ValueError(
+            "Unsupported source content: embedded SVG cannot be safely rendered"
+        ) from exc
 
 
 def _inline(value):
@@ -110,6 +203,11 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
     if ext not in SUFFIXES:
         raise ValueError(f"Unsupported document format: {suffix}")
     unsupported, source_math, source_media = await asyncio.to_thread(_inventory, path)
+    inline_svg = await asyncio.to_thread(_inline_svg_count, path, ext)
+    if inline_svg:
+        # The converter does not identify which output assets represent inline SVGs,
+        # so their preservation cannot be verified reliably.
+        raise ValueError("Unsupported source content: inline SVG preservation cannot be verified")
     if unsupported:
         raise ValueError(
             "Unsupported source content: charts, diagrams or embedded objects cannot be faithfully rendered by the native converter"
@@ -226,7 +324,8 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
             enriched.append(block)
             if block.image_source:
                 try:
-                    with Image.open(assets[block.image_source]) as source:
+                    inference_image = _inference_image(assets[block.image_source], workdir)
+                    with Image.open(inference_image) as source:
                         preview = source.convert("RGB")
                         preview.thumbnail(
                             (pipeline.settings.preview_side, pipeline.settings.preview_side)
@@ -248,7 +347,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                     return parsed
 
                 visual = await pipeline._infer_valid(
-                    [assets[block.image_source]],
+                    [inference_image],
                     (PROMPTS / "document_structured.txt").read_text(),
                     structured_nonempty,
                     diagnostics,
@@ -276,7 +375,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                 if not pipeline.settings.captioning:
                     continue
                 captions = await pipeline._infer_valid(
-                    [assets[block.image_source]],
+                    [inference_image],
                     (PROMPTS / "figure_captioning.txt").read_text(),
                     _structured,
                     diagnostics,

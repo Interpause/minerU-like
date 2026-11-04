@@ -3,7 +3,82 @@ from docx import Document
 from PIL import Image
 
 from mineru_like.config import Settings
+from mineru_like.native import _inference_image
 from mineru_like.pipeline import Pipeline
+
+
+def test_svg_inference_is_bounded_and_preserves_source(tmp_path):
+    source = tmp_path / "shape.svg"
+    original = b'<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="2000"><rect width="2000" height="2000" fill="black"/></svg>'
+    source.write_bytes(original)
+    raster = _inference_image(source, tmp_path)
+    with Image.open(raster) as image:
+        assert image.size == (2048, 1024)
+        assert image.getpixel((0, 0)) == (0, 0, 0)
+        assert image.getpixel((2047, 0)) == (255, 255, 255)
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<image href="file:///etc/passwd"/>',
+        '<rect fill="url(https://example.com/x)"/>',
+        '<image href="data:image/png;base64,AAAA"/>',
+        '<!DOCTYPE svg [<!ENTITY x "abc">]><text>&x;</text>',
+    ],
+)
+def test_svg_rejects_resources_and_entities(tmp_path, body):
+    source = tmp_path / "bad.svg"
+    source.write_text(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{body}</svg>'
+    )
+    with pytest.raises(ValueError, match="safely rendered"):
+        _inference_image(source, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_native_svg_reaches_inference_and_remains_an_asset(tmp_path, monkeypatch):
+    import docvortex
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>'
+
+    class NativeResult:
+        diagnostics = []
+        assets = {"images/shape.svg": svg}
+
+        def to_dict(self):
+            return {
+                "pages": [
+                    {
+                        "blocks": [
+                            {
+                                "type": "image",
+                                "content": [
+                                    {"type": "image_body", "image_path": "images/shape.svg"}
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(docvortex, "parse", lambda *args, **kwargs: NativeResult())
+
+    class Runtime:
+        async def infer(self, images, prompt, *, max_tokens=None):
+            with Image.open(images[0]) as image:
+                assert image.format == "PNG"
+                assert image.getpixel((0, 0)) == (0, 0, 0)
+            return '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"}]'
+
+    source = tmp_path / "sample.html"
+    source.write_text("<html></html>")
+    result = await Pipeline(Settings(captioning=False), Runtime()).parse(
+        source, source.name, "auto", "standard", tmp_path / "out"
+    )
+    assert result.assets["images/shape.svg"].read_bytes() == svg
+    assert any(block.content == "x+y" for block in result.pages[0].blocks)
 
 
 @pytest.mark.asyncio
@@ -19,6 +94,18 @@ async def test_real_csv_conversion(tmp_path):
     with pytest.raises(ValueError, match="Advanced verification"):
         await Pipeline(Settings(), None).parse(
             path, path.name, "auto", "advanced", tmp_path / "advanced"
+        )
+
+
+@pytest.mark.asyncio
+async def test_inline_svg_is_not_silently_dropped(tmp_path):
+    source = tmp_path / "inline.html"
+    source.write_text(
+        '<html><body><p>Text</p><svg width="20" height="20"><rect width="20" height="20"/></svg></body></html>'
+    )
+    with pytest.raises(ValueError, match="inline SVG preservation"):
+        await Pipeline(Settings(), None).parse(
+            source, source.name, "auto", "standard", tmp_path / "out"
         )
 
 
