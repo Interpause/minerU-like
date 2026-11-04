@@ -48,3 +48,25 @@ def test_missing_asset_cannot_publish(tmp_path):
             [Page(0, [Block("image", "", image_source="images/missing.png")])]
         ).write_zip(tmp_path / "x.zip")
     assert not (tmp_path / "x.zip").exists()
+
+
+def test_titles_and_math_keep_plugin_semantics():
+    result = DocumentResult(
+        [
+            Page(
+                0,
+                [
+                    Block("title", "# Paper", metadata={"category": "doc_title"}),
+                    Block("inline_formula", "$x+1$"),
+                    Block("equation", "$$x^2$$"),
+                ],
+            )
+        ]
+    )
+    blocks = result.structured()["pages"][0]["blocks"]
+    assert blocks[0]["type"] == "doc_title"
+    assert blocks[0]["content"] == "Paper"
+    assert blocks[1]["type"] == "equation"
+    assert "# Paper" in result.markdown() and "## #" not in result.markdown()
+    assert "$x+1$" in result.markdown()
+    assert "$$\nx^2\n$$" in result.markdown()

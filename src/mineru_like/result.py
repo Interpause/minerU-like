@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass, field
@@ -25,14 +26,23 @@ class Block:
             parts.append(f"![{self.type}]({self.image_source})")
         if self.content:
             if self.type in {"doc_title", "paragraph_title", "title"}:
-                parts.append("#" * min(self.level or 2, 6) + " " + self.content)
-            elif self.type in {"equation", "display_formula"}:
+                level = self.level or (
+                    1
+                    if self.type == "doc_title" or self.metadata.get("category") == "doc_title"
+                    else 2
+                )
+                parts.append("#" * min(level, 6) + " " + re.sub(r"^#{1,6}\s+", "", self.content))
+            elif self.type in {"equation", "display_formula", "inline_formula"}:
                 formula = self.content.strip()
                 for opener, closer in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
                     if formula.startswith(opener) and formula.endswith(closer):
                         formula = formula[len(opener) : -len(closer)].strip()
                         break
-                parts.append("$$\n" + formula + "\n$$")
+                parts.append(
+                    "$" + formula + "$"
+                    if self.type == "inline_formula"
+                    else "$$\n" + formula + "\n$$"
+                )
             else:
                 parts.append(self.content)
         parts.extend(self.captions)
@@ -96,6 +106,16 @@ class DocumentResult:
             blocks = []
             for block in page.blocks:
                 item = asdict(block)
+                if block.type == "title":
+                    item["type"] = (
+                        "doc_title"
+                        if block.metadata.get("category") == "doc_title" or block.level == 1
+                        else "paragraph_title"
+                    )
+                if block.type in {"inline_formula", "display_formula", "equation_inline"}:
+                    item["type"] = "equation"
+                if item["type"] in {"doc_title", "paragraph_title"}:
+                    item["content"] = re.sub(r"^#{1,6}\s+", "", item["content"])
                 item["captions"] = [{"content": c} for c in block.captions]
                 item["footnotes"] = [{"content": c} for c in block.footnotes]
                 if item["level"] is None:
