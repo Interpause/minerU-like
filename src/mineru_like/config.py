@@ -35,6 +35,7 @@ class Settings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(8000, ge=1, le=65535)
     max_upload_bytes: int = Field(512 * 1024 * 1024, ge=1)
+    max_storage_bytes: int = Field(8 * 1024 * 1024 * 1024, ge=1)
     queue_size: int = Field(8, ge=1)
     retention_hours: float = Field(24, gt=0)
     upload_retention_hours: float = Field(1, gt=0)

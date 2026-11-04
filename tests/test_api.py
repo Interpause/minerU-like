@@ -4,6 +4,7 @@ import threading
 import time
 import zipfile
 
+import pytest
 from fastapi.testclient import TestClient
 
 from mineru_like.api import create_app
@@ -181,3 +182,74 @@ def test_cancel_waits_for_zip_writer_and_discards_output(tmp_path):
         assert not thread.is_alive()
         assert response[0].json()['status'] == 'canceled'
         assert list((tmp_path / 'outputs').iterdir()) == []
+
+
+def test_recovery_cleans_orphans_and_rejects_changed_configuration(tmp_path):
+    from mineru_like.store import config_snapshot
+    original = Settings(data_dir=tmp_path, captioning=True)
+    app = create_app(Settings(data_dir=tmp_path, captioning=False), parser)
+    store = app.state.store
+    now = time.time()
+    (tmp_path / 'uploads' / 'file').write_bytes(b'%PDF')
+    (tmp_path / 'uploads' / 'file.tmp').write_bytes(b'partial')
+    (tmp_path / 'outputs' / 'orphan.zip').write_bytes(b'partial')
+    (tmp_path / 'outputs' / 'kept.zip').write_bytes(b'completed')
+    (tmp_path / 'work' / 'old').mkdir()
+    (tmp_path / 'work' / 'old' / 'partial').write_bytes(b'partial')
+    store.execute('INSERT INTO uploads VALUES (?, ?, ?, ?, ?, ?)', ('file', 'test.pdf', 4, 'application/pdf', 'completed', now))
+    config, digest = config_snapshot(original, 'standard', 'auto')
+    store.execute('INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ('queued', 'file', 'queued', 'standard', 'auto', None, None, now, now, config, digest))
+    store.execute('INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ('done', 'file', 'completed', 'standard', 'auto', 'kept', None, now, now, config, digest))
+    with TestClient(app) as client:
+        status = client.get('/v1/parse/jobs/queued').json()
+        assert status['status'] == 'failed'
+        assert 'configuration changed' in status['files'][0]['error']['message']
+        assert (tmp_path / 'uploads' / 'file').exists()
+        assert (tmp_path / 'outputs' / 'kept.zip').exists()
+        assert not (tmp_path / 'uploads' / 'file.tmp').exists()
+        assert not (tmp_path / 'outputs' / 'orphan.zip').exists()
+        assert not (tmp_path / 'work' / 'old').exists()
+
+
+def test_data_directory_has_single_owner(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    with TestClient(create_app(settings, parser)):
+        with pytest.raises(RuntimeError, match='already in use'):
+            with TestClient(create_app(settings, parser)):
+                pass
+    with TestClient(create_app(settings, parser)) as client:
+        assert client.get('/v1/health').status_code == 200
+
+
+def test_failed_job_diagnostics_are_retained_then_expire(tmp_path):
+    async def broken(**kwargs):
+        (kwargs['workdir'] / 'diagnostics.jsonl').write_text('diagnostic')
+        raise ValueError('parse failed')
+    settings = Settings(data_dir=tmp_path, retention_hours=1)
+    app = create_app(settings, broken)
+    with TestClient(app) as client:
+        ident = submit(client, upload(client)).json()['job_id']
+        status = wait_status(client, ident, {'failed'})
+        for _ in range(100):
+            status = client.get('/v1/parse/jobs/' + ident).json()
+            if 'diagnostics_path' in status['files'][0]['error']:
+                break
+            time.sleep(.01)
+        diagnostics = tmp_path / 'failures' / ident / 'diagnostics.jsonl'
+        assert diagnostics.read_text() == 'diagnostic'
+        assert status['files'][0]['error']['diagnostics_path'] == str(diagnostics.parent)
+        app.state.store.execute('UPDATE jobs SET updated=? WHERE id=?', (time.time() - 7200, ident))
+        app.state.worker.cleanup()
+        assert not diagnostics.exists()
+
+
+def test_recovery_preserves_interrupted_job_diagnostics(tmp_path):
+    app = create_app(Settings(data_dir=tmp_path), parser)
+    now = time.time()
+    work = tmp_path / 'work' / 'interrupted'
+    work.mkdir()
+    (work / 'diagnostics.jsonl').write_text('partial')
+    app.state.store.execute('INSERT INTO jobs (id,file_id,status,tier,ocr_mode,created,updated) VALUES (?, ?, ?, ?, ?, ?, ?)', ('interrupted', 'file', 'running', 'standard', 'auto', now, now))
+    with TestClient(app) as client:
+        assert client.get('/v1/parse/jobs/interrupted').json()['status'] == 'failed'
+        assert (tmp_path / 'failures' / 'interrupted' / 'diagnostics.jsonl').read_text() == 'partial'

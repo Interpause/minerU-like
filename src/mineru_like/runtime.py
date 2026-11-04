@@ -45,7 +45,26 @@ class InferenceRuntime:
             raise InferenceError(f"Cannot read {name}: {exc}") from exc
         if not header or header.startswith(b"version https://git-lfs.github.com/spec/"):
             raise InferenceError(f"{name} is empty or a Git LFS pointer: {path}")
+        if name in {"model", "mmproj"} and not header.startswith(b"GGUF"):
+            raise InferenceError(f"{name} is not a GGUF file: {path}")
         return path
+
+    async def _check_version(self, binary: Path) -> None:
+        try:
+            proc = await asyncio.create_subprocess_exec(str(binary), "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+            except (TimeoutError, asyncio.CancelledError):
+                proc.kill()
+                await proc.wait()
+                raise
+        except OSError as exc:
+            raise InferenceError(f"Cannot execute inference binary: {exc}") from exc
+        except TimeoutError as exc:
+            raise InferenceError("Timed out checking inference binary version") from exc
+        version = out + err
+        if proc.returncode != 0 or not re.search(rb"\bbuild 12110\b.*\bcd959bae9\b", version):
+            raise InferenceError("Managed inference requires llama-server build 12110 (commit cd959bae9)")
 
     async def _select_device(self, binary: Path) -> str:
         if self.settings.device == "cpu":
@@ -95,6 +114,7 @@ class InferenceRuntime:
                 binary = self._asset(self.settings.binary, "binary")
                 model = self._asset(self.settings.model, "model")
                 mmproj = self._asset(self.settings.mmproj, "mmproj")
+                await self._check_version(binary)
                 self.device = await self._select_device(binary)
                 await self._launch(binary, model, mmproj)
             else:

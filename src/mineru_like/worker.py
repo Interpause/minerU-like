@@ -18,7 +18,7 @@ class Worker:
         self.canceling = set()
 
     def start(self):
-        self.store.recover()
+        self.store.recover(self.settings)
         self.task = asyncio.create_task(self.run())
         self.wake.set()
 
@@ -76,6 +76,7 @@ class Worker:
         workdir.mkdir(exist_ok=True)
         output_id = uuid.uuid4().hex
         output = self.store.root / 'outputs' / (output_id + '.zip')
+        failed = False
         try:
             if self.parser is None:
                 raise RuntimeError('No parsing engine is configured')
@@ -92,13 +93,21 @@ class Worker:
             output.unlink(missing_ok=True)
             if job['id'] not in self.canceling:
                 self.store.execute("UPDATE jobs SET status='failed', error=?, updated=? WHERE id=? AND status='running'", ('Server stopped while the job was running', time.time(), job['id']))
+                failed = True
             raise
         except Exception as exc:
             log.exception('Job %s failed', job['id'])
             output.unlink(missing_ok=True)
             self.store.execute("UPDATE jobs SET status='failed', error=?, updated=? WHERE id=? AND status='running'", (str(exc) or 'Parsing failed', time.time(), job['id']))
+            failed = True
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            if failed and workdir.exists():
+                try:
+                    workdir.rename(self.store.root / 'failures' / job['id'])
+                except OSError:
+                    log.exception('Could not preserve diagnostics for job %s', job['id'])
+            else:
+                shutil.rmtree(workdir, ignore_errors=True)
 
     def cleanup(self):
         now = time.time()
@@ -107,6 +116,7 @@ class Worker:
             for job in jobs:
                 if job['output_id']:
                     (self.store.root / 'outputs' / (job['output_id'] + '.zip')).unlink(missing_ok=True)
+                shutil.rmtree(self.store.root / 'failures' / job['id'], ignore_errors=True)
                 db.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
             uploads = db.execute("SELECT id FROM uploads WHERE status != 'uploading' AND created < ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.file_id=uploads.id)", (now - self.settings.upload_retention_hours * 3600,)).fetchall()
             for upload in uploads:

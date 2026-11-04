@@ -95,3 +95,24 @@ async def test_cuda_probe_does_not_treat_load_error_as_device(monkeypatch):
     runtime = InferenceRuntime(RuntimeSettings(device="cuda"))
     with pytest.raises(InferenceError, match="no CUDA device"):
         await runtime._select_device("server")
+
+
+def test_rejects_invalid_gguf(tmp_path):
+    model = tmp_path / 'model.gguf'
+    model.write_bytes(b'not a model')
+    with pytest.raises(InferenceError, match='not a GGUF'):
+        InferenceRuntime._asset(model, 'model')
+
+
+@pytest.mark.asyncio
+async def test_rejects_wrong_server_version(monkeypatch):
+    class Probe:
+        returncode = 0
+        async def communicate(self):
+            return b'version: 0.9.0-dev (build 9999, commit cd959bae9)', b''
+    async def launch(*args, **kwargs):
+        return Probe()
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    runtime = InferenceRuntime(RuntimeSettings())
+    with pytest.raises(InferenceError, match='build 12110'):
+        await runtime._check_version('server')

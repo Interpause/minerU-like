@@ -14,3 +14,4 @@ config.local.toml
 .local/
 *.gguf
 *.sqlite*
+pytest-of-*/

@@ -1,7 +1,6 @@
 """Local V1 upload and job API."""
-import hashlib
+import fcntl
 import hmac
-import json
 import logging
 import os
 import time
@@ -13,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .store import Store
+from .store import Store, config_snapshot
 from .worker import Worker
 
 log = logging.getLogger(__name__)
@@ -46,20 +45,31 @@ def create_app(settings, parser=None, engine=None):
                 log.exception('Inference engine startup failed')
 
         import asyncio
-        engine_task = asyncio.create_task(start_engine()) if engine else None
-        worker.start()
+        lock = (store.root / 'owner.lock').open('a+b')
         try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            raise RuntimeError('Data directory is already in use by another server') from None
+        engine_task = None
+        try:
+            engine_task = asyncio.create_task(start_engine()) if engine else None
+            worker.start()
             yield
         finally:
-            await worker.stop()
-            if engine_task:
-                if not engine_task.done():
-                    engine_task.cancel()
-                try:
-                    await engine_task
-                except asyncio.CancelledError:
-                    pass
-                await engine.close()
+            try:
+                await worker.stop()
+                if engine_task:
+                    if not engine_task.done():
+                        engine_task.cancel()
+                    try:
+                        await engine_task
+                    except asyncio.CancelledError:
+                        pass
+                    await engine.close()
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                lock.close()
 
     app = FastAPI(lifespan=lifespan)
     app.state.store, app.state.worker = store, worker
@@ -150,16 +160,7 @@ def create_app(settings, parser=None, engine=None):
             raise HTTPException(400, 'Expected one complete uploaded file')
         file_id = source['file_id']
         ident, now = uuid.uuid4().hex, time.time()
-        def redact(value):
-            if isinstance(value, dict):
-                return {key: redact(item) for key, item in value.items() if key.lower() not in {'api_key', 'secret', 'password', 'access_token', 'authorization'}}
-            if isinstance(value, list):
-                return [redact(item) for item in value]
-            return value
-        snapshot = redact(settings.model_dump(mode='json')) if hasattr(settings, 'model_dump') else {}
-        snapshot.update({'tier': body.tier, 'ocr_mode': body.ocr_mode})
-        config_json = json.dumps(snapshot, sort_keys=True, separators=(',', ':'))
-        config_hash = hashlib.sha256(config_json.encode()).hexdigest()
+        config_json, config_hash = config_snapshot(settings, body.tier, body.ocr_mode)
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             upload = db.execute("SELECT id FROM uploads WHERE id=? AND status='completed'", (file_id,)).fetchone()
@@ -182,6 +183,8 @@ def create_app(settings, parser=None, engine=None):
             file['output_files'] = {'zip': {'file_id': job['output_id']}}
         if job['error']:
             file['error'] = {'message': job['error']}
+            if (store.root / 'failures' / job_id).is_dir():
+                file['error']['diagnostics_path'] = str(store.root / 'failures' / job_id)
         return {'job_id': job_id, 'status': job['status'], 'files': [file]}
 
     @app.delete('/v1/parse/jobs/{job_id}')

@@ -27,7 +27,12 @@ class Block:
             if self.type in {"doc_title", "paragraph_title", "title"}:
                 parts.append("#" * min(self.level or 2, 6) + " " + self.content)
             elif self.type in {"equation", "display_formula"}:
-                parts.append("$$\n" + self.content + "\n$$")
+                formula = self.content.strip()
+                for opener, closer in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
+                    if formula.startswith(opener) and formula.endswith(closer):
+                        formula = formula[len(opener) : -len(closer)].strip()
+                        break
+                parts.append("$$\n" + formula + "\n$$")
             else:
                 parts.append(self.content)
         parts.extend(self.captions)
