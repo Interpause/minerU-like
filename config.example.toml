@@ -1,0 +1,22 @@
+# Copy to config.local.toml and set absolute runtime/model paths.
+data_dir = ".local/mineru-like"
+host = "127.0.0.1"
+port = 8000
+captioning = true
+cross_page_tables = true
+
+[runtime]
+mode = "managed"
+binary = "/absolute/path/to/llama-server"
+model = "/absolute/path/to/OvisOCR3.BF16.gguf"
+mmproj = "/absolute/path/to/OvisOCR3.mmproj-bf16.gguf"
+device = "auto"
+kv_cache = "f16"
+context_size = 32768
+max_tokens = 16384
+
+# External mode uses the same task adapter without managing the remote process:
+# mode = "external"
+# base_url = "http://127.0.0.1:8080"
+# api_key = "your-private-key"
+# model_alias = "ovisocr3"
