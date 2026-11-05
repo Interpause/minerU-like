@@ -20,6 +20,7 @@ from starlette.responses import Response
 from . import __version__
 from .config import Settings
 from .contracts import Engine, Parser, Payload, SQLiteRecord
+from .server_logging import open_server_logs, runtime_profile
 from .store import Store, config_snapshot
 from .worker import Worker
 
@@ -55,6 +56,10 @@ def create_app(
             try:
                 if engine is not None:
                     await engine.start()
+                    log.info(
+                        "engine_ready",
+                        extra={"details": {"device_selected": getattr(engine, "device", None)}},
+                    )
             except Exception:
                 log.exception("Inference engine startup failed")
 
@@ -66,11 +71,25 @@ def create_app(
         except BlockingIOError:
             lock.close()
             raise RuntimeError("Data directory is already in use by another server") from None
+        try:
+            handlers = open_server_logs(settings)
+        except Exception:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+            raise
+        package_log = logging.getLogger("mineru_like")
+        previous_level = package_log.level
+        package_log.setLevel(logging.INFO)
+        log.info("server_started", extra={"details": runtime_profile(settings)})
+        log.info("Server diagnostic logs: %s", settings.data_dir / "logs")
         engine_task = None
         try:
             engine_task = asyncio.create_task(start_engine()) if engine else None
             worker.start()
             yield
+        except Exception:
+            log.exception("server_lifecycle_failed")
+            raise
         finally:
             try:
                 await worker.stop()
@@ -83,9 +102,17 @@ def create_app(
                         pass
                     if engine is not None:
                         await engine.close()
+            except Exception:
+                log.exception("server_shutdown_failed")
+                raise
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
                 lock.close()
+                log.info("server_stopped")
+                for handler in handlers:
+                    package_log.removeHandler(handler)
+                    handler.close()
+                package_log.setLevel(previous_level)
 
     app = FastAPI(lifespan=lifespan, version=__version__)
     app.state.store, app.state.worker = store, worker
@@ -99,7 +126,33 @@ def create_app(
                 from fastapi.responses import JSONResponse
 
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        return await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception(
+                "request_failed",
+                extra={
+                    "details": {
+                        "method": request.method,
+                        "path": request.url.path,
+                        **getattr(request.state, "document", {}),
+                    }
+                },
+            )
+            raise
+        if response.status_code >= 400:
+            log.warning(
+                "request_rejected",
+                extra={
+                    "details": {
+                        "method": request.method,
+                        "path": request.url.path,
+                        "http_status": response.status_code,
+                        **getattr(request.state, "document", {}),
+                    }
+                },
+            )
+        return response
 
     @app.get("/v1/health", response_model=None)
     async def health() -> Payload:
@@ -120,7 +173,8 @@ def create_app(
         return {"data": [{"id": tier} for tier in supported_tiers]}
 
     @app.post("/v1/uploads", response_model=None)
-    async def create_upload(body: UploadRequest) -> Payload:
+    async def create_upload(body: UploadRequest, request: Request) -> Payload:
+        request.state.document = {"filename": body.filename, "bytes": body.bytes}
         if body.bytes > settings.max_upload_bytes:
             raise HTTPException(413, "Upload exceeds the configured size limit")
         if (
@@ -153,6 +207,7 @@ def create_app(
         upload = store.one("SELECT * FROM uploads WHERE id=?", (upload_id,))
         if not upload:
             raise HTTPException(404, "Upload not found")
+        request.state.document = {"filename": upload["filename"], "upload_id": upload_id}
         if upload["status"] != "pending":
             raise HTTPException(409, "Upload is already in progress or completed")
         if not store.execute(
@@ -183,7 +238,7 @@ def create_app(
         return {"status": "uploaded"}
 
     @app.post("/v1/uploads/{upload_id}/complete", response_model=None)
-    async def complete(upload_id: str) -> Payload:
+    async def complete(upload_id: str, request: Request) -> Payload:
         upload = store.one("SELECT * FROM uploads WHERE id=?", (upload_id,))
         if not upload:
             raise HTTPException(404, "Upload not found")
@@ -199,7 +254,7 @@ def create_app(
         return {"id": upload_id, "status": "completed", "file": {"id": upload_id}}
 
     @app.post("/v1/parse/jobs", status_code=202, response_model=None)
-    async def create_job(body: JobRequest) -> Payload:
+    async def create_job(body: JobRequest, request: Request) -> Payload:
         if parser is None:
             raise HTTPException(503, "No parsing engine is configured")
         warnings = []
@@ -234,6 +289,7 @@ def create_app(
             ).fetchone()
             if not upload:
                 raise HTTPException(404, "Uploaded file not found")
+            request.state.document = {"filename": upload["filename"], "upload_id": file_id}
             from .native import ALIASES, SUFFIXES
             from .pipeline import IMAGE_EXTENSIONS
 
@@ -263,6 +319,19 @@ def create_app(
                     config_hash,
                 ),
             )
+        log.info(
+            "job_queued",
+            extra={
+                "details": {
+                    "job_id": ident,
+                    "upload_id": file_id,
+                    "filename": upload["filename"],
+                    "tier": body.tier,
+                    "ocr_mode": body.ocr_mode,
+                    "config_hash": config_hash,
+                }
+            },
+        )
         worker.wake.set()
         response: Payload = {"job_id": ident, "status": "queued"}
         if warnings:

@@ -352,6 +352,8 @@ def test_failed_job_diagnostics_are_retained_then_expire(tmp_path: Path) -> None
         app.state.store.execute("UPDATE jobs SET updated=? WHERE id=?", (time.time() - 7200, ident))
         app.state.worker.cleanup()
         assert not diagnostics.exists()
+        issues = (tmp_path / "logs" / "issues.jsonl").read_text()
+        assert ident in issues and "test.pdf" in issues
 
 
 def test_recovery_preserves_interrupted_job_diagnostics(tmp_path: Path) -> None:

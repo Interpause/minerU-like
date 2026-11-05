@@ -181,7 +181,20 @@ def main() -> None:
                 settings.host = args.host
             if args.port:
                 settings.port = args.port
-            verify_assets(settings)
+            from .server_logging import open_server_logs, runtime_profile
+
+            handlers = open_server_logs(settings)
+            try:
+                verify_assets(settings)
+            except Exception:
+                logging.getLogger("mineru_like.cli").exception(
+                    "asset_verification_failed", extra={"details": runtime_profile(settings)}
+                )
+                raise
+            finally:
+                for handler in handlers:
+                    logging.getLogger("mineru_like").removeHandler(handler)
+                    handler.close()
             import uvicorn
 
             from .api import create_app

@@ -7,6 +7,7 @@ import copy
 import hashlib
 import html
 import json
+import logging
 import re
 import shutil
 import threading
@@ -24,6 +25,7 @@ from .contracts import Diagnostic, Inference, Payload
 from .geometry import ImageGeometry, ovis_size
 from .result import Block, DocumentResult, Page
 from .schemas import cross_page_schema, layout_schema, structured_schema
+from .server_logging import record_diagnostic
 
 T = TypeVar("T")
 
@@ -54,6 +56,7 @@ class _Diagnostics(list[Diagnostic]):
 
     def append(self, item: Payload) -> None:
         super().append(item)
+        record_diagnostic(item)
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(item, ensure_ascii=False) + "\n")
 
@@ -708,6 +711,20 @@ class Pipeline:
                 "call_number": self._call_count,
                 "attempt": attempt + 1,
             }
+            logging.getLogger(__name__).info(
+                "inference_started",
+                extra={
+                    "details": {
+                        "stage": stage,
+                        "page": page_idx + 1,
+                        "page_idx": page_idx,
+                        "call_number": self._call_count,
+                        "attempt": attempt + 1,
+                        "images": [image.name for image in selected],
+                        "structured_output": schema is not None,
+                    }
+                },
+            )
             try:
                 if schema is not None:
                     raw = await self.runtime.infer(

@@ -269,6 +269,24 @@ class InferenceRuntime:
                 break
         raise InferenceError(last_error or "Inference server failed to start")
 
+    def _log_backend_failure(self) -> None:
+        if self._log is None:
+            return
+        try:
+            descriptor = self._log.fileno()
+            size = os.fstat(descriptor).st_size
+            # pread leaves the child's shared output offset untouched.
+            tail = os.pread(descriptor, 8192, max(0, size - 8192)).decode(errors="replace")
+            if self._client is not None:
+                key = self._client.headers.get("Authorization", "").removeprefix("Bearer ")
+                if key:
+                    tail = tail.replace(key, "[redacted]")
+            logging.getLogger(__name__).error(
+                "backend_failure_tail", extra={"details": {"backend_log_tail": tail}}
+            )
+        except OSError:
+            logging.getLogger(__name__).exception("Could not read backend error tail")
+
     async def infer(
         self,
         images: list[Path],
@@ -372,6 +390,7 @@ class InferenceRuntime:
                 raise InferenceError("Inference response has no text content")
             return InferenceResponse(result, finish_reason, usage, tuple(geometries))
         except httpx.HTTPStatusError as exc:
+            self._log_backend_failure()
             detail = exc.response.text[:500]
             if self.settings.api_key:
                 detail = detail.replace(self.settings.api_key, "[redacted]")
@@ -379,7 +398,11 @@ class InferenceRuntime:
                 f"Inference server returned HTTP {exc.response.status_code}: {detail}"
             ) from exc
         except (KeyError, IndexError, TypeError, ValueError) as exc:
+            self._log_backend_failure()
             raise InferenceError("Malformed inference response") from exc
+        except Exception:
+            self._log_backend_failure()
+            raise
         finally:
             logging.getLogger(__name__).info(
                 "Inference finished in %.2fs (images=%d, output_limit=%d, finish_reason=%s, usage=%s)",

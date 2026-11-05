@@ -28,6 +28,27 @@ Set a top-level `api_key` to require Bearer authentication on work/data routes. 
 
 ## Diagnostics and troubleshooting
 
+The server writes JSON Lines logs automatically beneath the configured data directory:
+
+- `logs/server.jsonl`: startup/runtime profile, uploaded filenames, upload/job IDs, input SHA-256 and size, job lifecycle/timing, page/stage progress, model usage and quality diagnostics.
+- `logs/issues.jsonl`: warnings and errors, including unresolved/incomplete output, rejected uploads/jobs, failures with chained Python tracebacks, and bounded managed-backend error tails. Successful processing does not prove transcription accuracy.
+
+Each file rotates at 10 MiB with five numbered backups (`.1` through `.5`), at most about 120 MiB combined. Logs survive restarts and job/output retention cleanup; older records eventually rotate away. Copy both files and their numbered backups when reporting a library run. A log's `filename` is the uploaded name, not a Zotero item title/key. The current plugin hashes the original basename into a 12-hex-digit PDF name, so logs alone cannot reveal the original attachment name. Use the lookup helper below; the input SHA-256 distinguishes files with identical names. Job IDs, page numbers (one-based `page`, zero-based `page_idx`), stages, and output IDs identify the corresponding evidence. Pages refer to the uploaded document/chunk or native logical units; the server does not receive Zotero chunk offsets. `inference_started` without a matching diagnostic helps locate stalled work; overlapping jobs remain separately identified.
+
+On the machine holding Zotero's PDF storage, map logged issues back to attachment paths and storage keys:
+
+```sh
+uv run --locked python scripts/identify_logged_files.py \
+  --storage "$HOME/Zotero/storage" > data/attachment-lookup.jsonl
+```
+
+Select the actual storage directory if different. The helper reads files without modifying the library, includes rotated logs automatically, and hashes PDF contents only for filename candidates. Give `--logs /path/to/server.jsonl /path/to/issues.jsonl` for another data directory. Add `--all` to include successful jobs when investigating quality errors with no warning. Share the lookup output alongside the logs. `exact_content` identifies matching bytes; `filename_only`/`ambiguous` candidates need inspection, particularly for split/repacked uploads. A Zotero storage key identifies an attachment, not its parent item. Logs and lookup output include local filenames/paths.
+
+Failed jobs also retain `job-context.json` and available raw diagnostics beneath `failures/<job_id>/` until normal retention removes them. Keep that directory or the completed result ZIP when available. For a quality problem that the model did not flag, provide the original attachment filename and affected page along with the logs and result ZIP; logging cannot detect every incorrect transcription.
+
+The persistent logs omit normal request bodies, authorization headers, prompts and raw transcription candidates. Configured application/inference API keys are redacted, including in tracebacks. Logs still contain document filenames, hashes, local evidence paths and exception/backend details; inspect them before sharing. Raw candidates and images remain in the existing per-job diagnostic artifacts rather than being copied wholesale into the server log. HTTP errors before valid upload metadata is available may only identify the request route/status.
+
+
 With the local configuration prepared, probe LibreOffice and cwebp availability:
 
 ```sh

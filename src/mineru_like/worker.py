@@ -1,14 +1,18 @@
 """Durable asynchronous jobs; inference capacity is owned by the backend."""
 
 import asyncio
+import json
 import logging
 import shutil
 import time
 import uuid
 from typing import cast
 
+from .assets import sha256
 from .config import Settings
 from .contracts import Parser, SQLiteRecord
+from .result import DocumentResult
+from .server_logging import job_context, runtime_profile
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -23,7 +27,23 @@ class Worker:
         self.canceling: set[str] = set()
 
     def start(self) -> None:
+        with self.store.connect() as db:
+            previous = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT jobs.id AS job_id, uploads.filename, jobs.file_id AS upload_id FROM jobs LEFT JOIN uploads ON uploads.id=jobs.file_id WHERE jobs.status IN ('running','queued')"
+                )
+            ]
         self.store.recover(self.settings)
+        for item in previous:
+            recovered = self.store.one(
+                "SELECT status,error FROM jobs WHERE id=?", (item["job_id"],)
+            )
+            if recovered and recovered["status"] == "failed":
+                log.warning(
+                    "job_failed_on_restart",
+                    extra={"details": {**item, "error": recovered["error"]}},
+                )
         self.task = asyncio.create_task(self.run())
         self.wake.set()
 
@@ -64,7 +84,11 @@ class Worker:
         if not task.cancelled():
             error = task.exception()
             if error:
-                log.error("Job task %s failed outside processing: %s", job_id, error)
+                log.error(
+                    "Job task %s failed outside processing",
+                    job_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
 
     async def run(self) -> None:
         while True:
@@ -98,11 +122,35 @@ class Worker:
             SQLiteRecord, self.store.one("SELECT * FROM uploads WHERE id=?", (job["file_id"],))
         )
         workdir = self.store.root / "work" / job["id"]
-        workdir.mkdir(exist_ok=True)
         output_id = uuid.uuid4().hex
         output = self.store.root / "outputs" / (output_id + ".zip")
         failed = False
+        started = time.monotonic()
+        token = job_context.set(
+            {
+                "job_id": job["id"],
+                "upload_id": job["file_id"],
+                "filename": upload["filename"],
+                "bytes": upload["size"],
+                "tier": job["tier"],
+                "ocr_mode": job["ocr_mode"],
+                "config_hash": job.get("config_hash"),
+            }
+        )
+        log.info("job_started")
         try:
+            workdir.mkdir(exist_ok=True)
+            context = {
+                **(job_context.get() or {}),
+                "sha256": await asyncio.to_thread(
+                    sha256, self.store.root / "uploads" / upload["id"]
+                ),
+            }
+            job_context.set(context)
+            (workdir / "job-context.json").write_text(
+                json.dumps({**context, **runtime_profile(self.settings)}), encoding="utf-8"
+            )
+            log.info("job_input", extra={"details": {**context, **runtime_profile(self.settings)}})
             if self.parser is None:
                 raise RuntimeError("No parsing engine is configured")
             result = await self.parser(
@@ -112,6 +160,18 @@ class Worker:
                 tier=job["tier"],
                 workdir=workdir,
             )
+            summary = {}
+            if isinstance(result, DocumentResult):
+                summary = {
+                    "pages": len(result.pages),
+                    "assets": len(result.assets),
+                    "diagnostic_count": len(result.diagnostics),
+                    "model_calls": sum(
+                        "purpose" in item and "duration_seconds" in item
+                        for item in result.diagnostics
+                    ),
+                }
+            log.info("job_parsed", extra={"details": summary})
             write = asyncio.create_task(asyncio.to_thread(result.write_zip, output))
             try:
                 await asyncio.shield(write)
@@ -131,7 +191,21 @@ class Worker:
                 ).rowcount
             if not published:
                 output.unlink(missing_ok=True)
+            else:
+                log.info(
+                    "job_completed",
+                    extra={
+                        "details": {
+                            "output_id": output_id,
+                            "duration_seconds": time.monotonic() - started,
+                        }
+                    },
+                )
         except asyncio.CancelledError:
+            log.warning(
+                "job_canceled" if job["id"] in self.canceling else "job_interrupted",
+                extra={"details": {"duration_seconds": time.monotonic() - started}},
+            )
             output.unlink(missing_ok=True)
             if job["id"] not in self.canceling:
                 self.store.execute(
@@ -141,7 +215,15 @@ class Worker:
                 failed = True
             raise
         except Exception as exc:
-            log.exception("Job %s failed", job["id"])
+            log.exception(
+                "job_failed",
+                extra={
+                    "details": {
+                        "duration_seconds": time.monotonic() - started,
+                        "diagnostics_path": str(self.store.root / "failures" / job["id"]),
+                    }
+                },
+            )
             output.unlink(missing_ok=True)
             self.store.execute(
                 "UPDATE jobs SET status='failed', error=?, updated=? WHERE id=? AND status='running'",
@@ -156,6 +238,7 @@ class Worker:
                     log.exception("Could not preserve diagnostics for job %s", job["id"])
             else:
                 shutil.rmtree(workdir, ignore_errors=True)
+            job_context.reset(token)
 
     def cleanup(self) -> None:
         now = time.time()
