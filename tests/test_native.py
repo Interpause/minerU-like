@@ -127,7 +127,7 @@ async def test_inline_svg_is_not_silently_dropped(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_native_embedded_raster_formula_is_supplemental(tmp_path: Path) -> None:
+async def test_native_embedded_raster_formula_is_delivered_as_latex(tmp_path: Path) -> None:
     image = tmp_path / "formula.png"
     Image.new("RGB", (50, 30), "black").save(image)
     source = tmp_path / "formula.docx"
@@ -145,12 +145,65 @@ async def test_native_embedded_raster_formula_is_supplemental(tmp_path: Path) ->
             max_tokens: int | None = None,
             response_schema: Payload | None = None,
         ) -> str:
+            if response_schema is None:
+                return "$$x+y$$"
             return '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"}]'
 
     result = await Pipeline(Settings(captioning=False), Runtime()).parse(
         source, source.name, "auto", "standard", tmp_path / "out"
     )
-    assert any(block.image_source for block in result.pages[0].blocks)
+    assert not any(block.image_source for block in result.pages[0].blocks)
+    assert not result.assets
     formula = next(block for block in result.pages[0].blocks if block.type == "equation")
     assert formula.content == "x+y"
-    assert formula.metadata["source"] == "visual_supplement"
+    assert formula.metadata["source"] == "visual_replacement"
+
+
+def test_semantic_corroboration_respects_math_and_table_spans() -> None:
+    from mineru_like.native import _semantic_signature
+
+    assert _semantic_signature(r"$\frac{X}{y}$") == _semantic_signature(r"$$\dfrac{X}{y}$$")
+    assert _semantic_signature("$X$") != _semantic_signature("$x$")
+    assert _semantic_signature(
+        '<table><tr><td colspan="2">A</td></tr></table>'
+    ) != _semantic_signature("<table><tr><td>A</td></tr></table>")
+
+
+@pytest.mark.asyncio
+async def test_uncorroborated_native_formula_retains_original_asset(tmp_path: Path) -> None:
+    image = tmp_path / "formula.png"
+    Image.new("RGB", (50, 30), "black").save(image)
+    source = tmp_path / "formula.docx"
+    document = Document()
+    document.add_paragraph("Original prose")
+    document.add_picture(str(image))
+    document.save(str(source))
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def infer(
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
+        ) -> str:
+            self.calls += 1
+            if response_schema is None:
+                return "$$x-y$$"
+            return '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"}]'
+
+    runtime = Runtime()
+    result = await Pipeline(Settings(captioning=False), runtime).parse(
+        source, source.name, "auto", "standard", tmp_path / "out"
+    )
+    assert runtime.calls == 2
+    assert any(block.image_source for block in result.pages[0].blocks)
+    assert result.assets
+    assert any(
+        d.get("stage") == "native_semantic_corroboration" and d.get("status") == "unresolved"
+        for d in result.diagnostics
+    )

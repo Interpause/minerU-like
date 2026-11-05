@@ -19,7 +19,7 @@ from typing import Any, Protocol
 from .config import Settings
 from .contracts import Inference, Payload
 from .result import Block, DocumentResult, Page
-from .verification import VerificationPipeline
+from .verification import VerificationPipeline, _units
 
 SUFFIXES = {
     "doc",
@@ -49,6 +49,36 @@ class NativePipeline(VerificationPipeline, Protocol):
     async def parse(
         self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
     ) -> DocumentResult: ...
+
+
+def _native_markdown(raw: str) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("Empty independent image reading")
+    return raw
+
+
+def _semantic_signature(text: str) -> tuple[object, ...]:
+    """Compare ordered text and math while retaining exact table structure."""
+    from .pipeline import _table_signature
+
+    signature: list[object] = []
+    position = 0
+    for match in re.finditer(r"<table\b[\s\S]*?</table\s*>", text, re.I):
+        signature.extend(unit[0] for unit in _units(text[position : match.start()]))
+        signature.append(("table", _table_signature(match.group())))
+        position = match.end()
+    signature.extend(unit[0] for unit in _units(text[position:]))
+    return tuple(signature)
+
+
+def _semantic_reading(regions: list[Payload]) -> str:
+    values = []
+    for region in regions:
+        content = region["content"]
+        if region["category"] in {"inline_formula", "display_formula"}:
+            content = Block("equation", content).markdown()
+        values.append(content)
+    return "\n".join(values)
 
 
 class _InlineSVGCounter(HTMLParser):
@@ -529,8 +559,16 @@ async def parse_native(
         raise ValueError("Invalid native document page count")
     from PIL import Image
 
-    from .pipeline import IMAGES, PROMPTS, _figure_kind, _ink_outside, _structured
+    from .pipeline import (
+        IMAGES,
+        PROMPTS,
+        _figure_kind,
+        _ink_outside,
+        _semantic_regions,
+        _structured,
+    )
 
+    converted_assets: set[str] = set()
     for page in pages:
         enriched = []
         for block in page.blocks:
@@ -591,6 +629,55 @@ async def parse_native(
                             },
                         )
                     )
+                corroborated = False
+                if await asyncio.to_thread(_semantic_regions, visual, inference_image):
+                    try:
+                        independent = await pipeline._infer_valid(
+                            [inference_image],
+                            (PROMPTS / "document_markdown.txt").read_text(),
+                            _native_markdown,
+                            diagnostics,
+                            page.page_idx,
+                            "native_semantic_corroboration",
+                        )
+                        corroborated = _semantic_signature(
+                            _semantic_reading(visual)
+                        ) == _semantic_signature(independent)
+                    except ValueError:
+                        pass
+                    if not corroborated:
+                        diagnostics.append(
+                            {
+                                "page_idx": page.page_idx,
+                                "stage": "native_semantic_corroboration",
+                                "status": "unresolved",
+                            }
+                        )
+                if corroborated:
+                    origin_index = next(i for i, item in enumerate(enriched) if item is block)
+                    replacements = enriched[origin_index + 1 :]
+                    if replacements:
+                        replacements[0].captions[:0] = block.captions
+                        replacements[-1].footnotes.extend(block.footnotes)
+                    del enriched[origin_index]
+                    converted_assets.add(block.image_source)
+                    for replacement in enriched:
+                        if replacement.metadata.get("source_image") == block.image_source:
+                            replacement.metadata.pop("source_image", None)
+                            replacement.metadata.update(
+                                source="visual_replacement",
+                                source_asset_sha256=hashlib.sha256(
+                                    assets[block.image_source].read_bytes()
+                                ).hexdigest(),
+                            )
+                    diagnostics.append(
+                        {
+                            "page_idx": page.page_idx,
+                            "stage": "native_visual_transcription",
+                            "status": "semantic_replacement",
+                        }
+                    )
+                    continue
                 if not pipeline.settings.captioning:
                     continue
                 captions = await pipeline._infer_valid(
@@ -626,6 +713,21 @@ async def parse_native(
                         + "\n```"
                     )
         page.blocks = enriched
+    from .result import image_references
+
+    referenced = {b.image_source for page in pages for b in page.blocks if b.image_source}
+    referenced.update(
+        name
+        for page in pages
+        for b in page.blocks
+        for text in (b.content, *b.captions, *b.footnotes)
+        for name in image_references(text)
+    )
+    assets = {
+        name: source
+        for name, source in assets.items()
+        if name not in converted_assets or name in referenced
+    }
     if needs_visual:
         if pipeline.runtime is None:
             raise ValueError("Unsupported source content: visual inference is unavailable")
