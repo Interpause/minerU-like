@@ -9,15 +9,25 @@ import re
 import shutil
 import signal
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
+
+from .config import LibreOfficeSettings
+from .contracts import Payload
 
 
 class LibreOfficeRenderer:
-    def __init__(self, settings):
+    def __init__(self, settings: LibreOfficeSettings) -> None:
         self.settings = settings
         self.last_diagnostic = ""
 
-    async def _run(self, args, *, instance_fd=None, instance_read=None):
+    async def _run(
+        self,
+        args: Sequence[str | Path],
+        *,
+        instance_fd: int | None = None,
+        instance_read: int | None = None,
+    ) -> int:
         proc = await asyncio.create_subprocess_exec(
             *map(str, args),
             stdout=asyncio.subprocess.PIPE,
@@ -27,16 +37,17 @@ class LibreOfficeRenderer:
             env={**os.environ, "SAL_USE_VCLPLUGIN": "svp", "SAL_DISABLE_OPENCL": "1"},
         )
 
-        async def drain(stream):
+        async def drain(stream: asyncio.StreamReader) -> bytes:
             result = bytearray()
             while chunk := await stream.read(8192):
                 result.extend(chunk[: max(0, 2048 - len(result))])
             return bytes(result)
 
+        assert proc.stdout is not None and proc.stderr is not None
         stdout = asyncio.create_task(drain(proc.stdout))
         stderr = asyncio.create_task(drain(proc.stderr))
 
-        async def cleanup():
+        async def cleanup() -> None:
             if instance_read is not None:
                 os.set_blocking(instance_read, False)
                 try:
@@ -82,7 +93,7 @@ class LibreOfficeRenderer:
             await task
             raise
 
-    async def probe(self) -> dict:
+    async def probe(self) -> Payload:
         mode = self.settings.mode
         if mode == "off":
             return {"available": False, "mode": "off"}
@@ -161,4 +172,5 @@ class LibreOfficeRenderer:
         finally:
             if write_fd is not None:
                 os.close(write_fd)
-                os.close(read_fd)
+                if read_fd is not None:
+                    os.close(read_fd)

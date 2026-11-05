@@ -12,21 +12,22 @@ import httpx2 as httpx
 
 from .assets import download_asset, installed_cwebp, provision_cwebp, register_assets, verify_assets
 from .config import load_settings
+from .contracts import Payload
 
 
-def client(base_url, api_key):
+def client(base_url: str, api_key: str | None) -> httpx.Client:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     return httpx.Client(
         base_url=base_url.rstrip("/") + "/", headers=headers, timeout=60, trust_env=False
     )
 
 
-def checked(response):
+def checked(response: httpx.Response) -> Payload:
     response.raise_for_status()
     return response.json()
 
 
-def submit(args):
+def submit(args: argparse.Namespace) -> None:
     with client(args.url, args.api_key) as http:
         path = args.input.resolve(strict=True)
         upload = checked(
@@ -78,7 +79,7 @@ def submit(args):
             raise
 
 
-def download(http, file_id, output):
+def download(http: httpx.Client, file_id: str, output: Path) -> None:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     with http.stream("GET", f"v1/files/{file_id}/content") as response:
@@ -92,7 +93,7 @@ def download(http, file_id, output):
             raise
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Local OvisOCR3 parsing server")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("serve", "setup"):
@@ -145,7 +146,7 @@ def main():
 
             settings = load_settings(args.config)
 
-            async def diagnose():
+            async def diagnose() -> Payload:
                 renderer = LibreOfficeRenderer(settings.libreoffice)
                 report = {
                     "libreoffice": await renderer.probe(),

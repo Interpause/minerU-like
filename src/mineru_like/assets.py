@@ -11,6 +11,8 @@ from pathlib import Path
 
 import httpx2 as httpx
 
+from .config import Settings
+
 CWEBP_VERSION = "1.6.0"
 CWEBP_DIRECTORY = "libwebp-1.6.0-linux-x86-64"
 CWEBP_URL = (
@@ -61,7 +63,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def register_assets(settings) -> Path:
+def register_assets(settings: Settings) -> Path:
     manifest = {}
     for name in ("binary", "model", "mmproj"):
         path = getattr(settings.runtime, name)
@@ -81,7 +83,7 @@ def register_assets(settings) -> Path:
     return target
 
 
-def verify_assets(settings) -> None:
+def verify_assets(settings: Settings) -> None:
     manifest_path = settings.data_dir / "assets.json"
     if settings.runtime.mode != "managed" or not manifest_path.is_file():
         return

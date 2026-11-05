@@ -5,12 +5,17 @@ import json
 import shutil
 import sqlite3
 import time
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+
+from .config import Settings
+from .contracts import SQLiteRecord
 
 
 class Store:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "uploads").mkdir(exist_ok=True)
@@ -33,7 +38,7 @@ class Store:
                 db.execute("ALTER TABLE jobs ADD COLUMN config_hash TEXT")
 
     @contextmanager
-    def connect(self):
+    def connect(self) -> Generator[sqlite3.Connection]:
         db = sqlite3.connect(self.db, timeout=30)
         db.row_factory = sqlite3.Row
         try:
@@ -42,17 +47,17 @@ class Store:
         finally:
             db.close()
 
-    def one(self, sql, params=()):
+    def one(self, sql: str, params: Sequence[Any] = ()) -> SQLiteRecord | None:
         with self.connect() as db:
             row = db.execute(sql, params).fetchone()
             return dict(row) if row else None
 
-    def execute(self, sql, params=()):
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         with self.connect() as db:
             cursor = db.execute(sql, params)
             return cursor.rowcount
 
-    def reserved_bytes(self, db):
+    def reserved_bytes(self, db: sqlite3.Connection) -> int:
         total = db.execute("SELECT COALESCE(SUM(size), 0) FROM uploads").fetchone()[0]
         for row in db.execute(
             "SELECT output_id FROM jobs WHERE status='completed' AND output_id IS NOT NULL"
@@ -62,7 +67,7 @@ class Store:
                 total += path.stat().st_size
         return total
 
-    def recover(self, settings=None):
+    def recover(self, settings: Settings | None = None) -> None:
         self.execute("UPDATE uploads SET status='pending' WHERE status='uploading'")
         self.execute(
             "UPDATE jobs SET status='failed', error=?, updated=? WHERE status='running'",
@@ -108,8 +113,8 @@ class Store:
                 path.unlink(missing_ok=True)
 
 
-def config_snapshot(settings, tier, ocr_mode):
-    def redact(value):
+def config_snapshot(settings: Settings, tier: str, ocr_mode: str) -> tuple[str, str]:
+    def redact(value: Any) -> Any:
         if isinstance(value, dict):
             return {
                 key: redact(item)

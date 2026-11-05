@@ -4,15 +4,18 @@ import asyncio
 import time
 import uuid
 from pathlib import Path, PurePosixPath
+from typing import overload
 
 from .assets import sha256
 from .compression import _replace, optimize_assets
+from .config import Settings
+from .contracts import Inference
 from .pipeline import Pipeline
-from .result import image_references
+from .result import DocumentResult, image_references
 from .svg_assets import improve_pdf_assets
 
 
-def finalize_asset_names(result):
+def finalize_asset_names(result: DocumentResult) -> None:
     """Make image basenames globally unique for the plugin's flattened image cache."""
     blocks = [b for page in result.pages for b in page.blocks]
     texts = [
@@ -38,7 +41,13 @@ def finalize_asset_names(result):
     token = uuid.uuid4().hex
     temporary = {name: f"images/__rewrite_{token}_{i}" for i, name in enumerate(mapping)}
 
-    def rewrite(text):
+    @overload
+    def rewrite(text: str) -> str: ...
+
+    @overload
+    def rewrite(text: None) -> None: ...
+
+    def rewrite(text: str | None) -> str | None:
         for old, pending in temporary.items():
             text = _replace(text, old, pending)
         for old, pending in temporary.items():
@@ -46,7 +55,11 @@ def finalize_asset_names(result):
         return text
 
     for block in blocks:
-        block.image_source = mapping.get(block.image_source, block.image_source)
+        block.image_source = (
+            mapping.get(block.image_source, block.image_source)
+            if block.image_source
+            else block.image_source
+        )
         block.content = rewrite(block.content)
         block.captions = [rewrite(s) for s in block.captions]
         block.footnotes = [rewrite(s) for s in block.footnotes]
@@ -60,7 +73,7 @@ def finalize_asset_names(result):
 class DocumentProcessor:
     tiers = Pipeline.tiers
 
-    def __init__(self, settings, runtime):
+    def __init__(self, settings: Settings, runtime: Inference) -> None:
         self.settings = settings.model_copy(deep=True)
         self.pipeline = Pipeline(self.settings, runtime)
         if self.settings.compression.cwebp_binary is None:
@@ -70,7 +83,9 @@ class DocumentProcessor:
             if binary is not None:
                 self.settings.compression.cwebp_binary = binary
 
-    async def parse(self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path):
+    async def parse(
+        self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
+    ) -> DocumentResult:
         result = await self.pipeline.parse(input_path, filename, ocr_mode, tier, workdir)
         started = time.monotonic()
         await improve_pdf_assets(result, input_path, self.settings, workdir / "source-assets")

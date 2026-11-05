@@ -5,24 +5,29 @@ import logging
 import shutil
 import time
 import uuid
+from typing import cast
+
+from .config import Settings
+from .contracts import Parser, SQLiteRecord
+from .store import Store
 
 log = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, store, parser, settings):
+    def __init__(self, store: Store, parser: Parser | None, settings: Settings) -> None:
         self.store, self.parser, self.settings = store, parser, settings
         self.wake = asyncio.Event()
-        self.task = None
-        self.active = {}
-        self.canceling = set()
+        self.task: asyncio.Task[None] | None = None
+        self.active: dict[str, asyncio.Task[None]] = {}
+        self.canceling: set[str] = set()
 
-    def start(self):
+    def start(self) -> None:
         self.store.recover(self.settings)
         self.task = asyncio.create_task(self.run())
         self.wake.set()
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
@@ -32,7 +37,7 @@ class Worker:
         await asyncio.gather(*tasks, return_exceptions=True)
         self.active.clear()
 
-    async def cancel(self, job_id):
+    async def cancel(self, job_id: str) -> bool:
         changed = self.store.execute(
             "UPDATE jobs SET status='canceled', updated=? WHERE id=? AND status='queued'",
             (time.time(), job_id),
@@ -54,14 +59,14 @@ class Worker:
                 self.canceling.discard(job_id)
         return bool(changed)
 
-    def _finished(self, job_id, task):
+    def _finished(self, job_id: str, task: asyncio.Task[None]) -> None:
         self.active.pop(job_id, None)
         if not task.cancelled():
             error = task.exception()
             if error:
                 log.error("Job task %s failed outside processing: %s", job_id, error)
 
-    async def run(self):
+    async def run(self) -> None:
         while True:
             self.wake.clear()
             self.cleanup()
@@ -87,8 +92,11 @@ class Worker:
             except TimeoutError:
                 pass
 
-    async def process(self, job):
-        upload = self.store.one("SELECT * FROM uploads WHERE id=?", (job["file_id"],))
+    async def process(self, job: SQLiteRecord) -> None:
+        # Upload retention excludes files referenced by a live job.
+        upload = cast(
+            SQLiteRecord, self.store.one("SELECT * FROM uploads WHERE id=?", (job["file_id"],))
+        )
         workdir = self.store.root / "work" / job["id"]
         workdir.mkdir(exist_ok=True)
         output_id = uuid.uuid4().hex
@@ -149,7 +157,7 @@ class Worker:
             else:
                 shutil.rmtree(workdir, ignore_errors=True)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         now = time.time()
         with self.store.connect() as db:
             jobs = db.execute(

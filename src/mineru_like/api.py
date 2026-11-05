@@ -6,13 +6,19 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
+from .config import Settings
+from .contracts import Engine, Parser, Payload, SQLiteRecord
 from .store import Store, config_snapshot
 from .worker import Worker
 
@@ -27,13 +33,15 @@ class UploadRequest(BaseModel):
 
 
 class JobRequest(BaseModel):
-    files: list[dict]
+    files: list[Payload]
     tier: str = "standard"
     ocr_mode: str = "auto"
     output_formats: list[str] = ["zip"]
 
 
-def create_app(settings, parser=None, engine=None):
+def create_app(
+    settings: Settings, parser: Parser | None = None, engine: Engine | None = None
+) -> FastAPI:
     store = Store(Path(settings.data_dir))
     worker = Worker(store, parser, settings)
     supported_tiers = (
@@ -41,10 +49,11 @@ def create_app(settings, parser=None, engine=None):
     )
 
     @asynccontextmanager
-    async def lifespan(app):
-        async def start_engine():
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        async def start_engine() -> None:
             try:
-                await engine.start()
+                if engine is not None:
+                    await engine.start()
             except Exception:
                 log.exception("Inference engine startup failed")
 
@@ -71,7 +80,8 @@ def create_app(settings, parser=None, engine=None):
                         await engine_task
                     except asyncio.CancelledError:
                         pass
-                    await engine.close()
+                    if engine is not None:
+                        await engine.close()
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
                 lock.close()
@@ -80,7 +90,7 @@ def create_app(settings, parser=None, engine=None):
     app.state.store, app.state.worker = store, worker
 
     @app.middleware("http")
-    async def auth(request: Request, call_next):
+    async def auth(request: Request, call_next: RequestResponseEndpoint) -> Response:
         key = settings.api_key
         if request.url.path != "/v1/health" and key:
             actual = request.headers.get("authorization", "")
@@ -90,10 +100,10 @@ def create_app(settings, parser=None, engine=None):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
-    @app.get("/v1/health")
-    async def health():
+    @app.get("/v1/health", response_model=None)
+    async def health() -> Payload:
         status = getattr(engine, "state", "configured" if parser else "unconfigured")
-        response = {
+        response: Payload = {
             "status": "ok",
             "version": "0.1.0",
             "features": {"sources": ["file_id"], "output_formats": ["zip"]},
@@ -104,12 +114,12 @@ def create_app(settings, parser=None, engine=None):
             response["engine_error"] = "Inference engine startup failed; see server logs"
         return response
 
-    @app.get("/v1/tiers")
-    async def tiers():
+    @app.get("/v1/tiers", response_model=None)
+    async def tiers() -> Payload:
         return {"data": [{"id": tier} for tier in supported_tiers]}
 
-    @app.post("/v1/uploads")
-    async def create_upload(body: UploadRequest):
+    @app.post("/v1/uploads", response_model=None)
+    async def create_upload(body: UploadRequest) -> Payload:
         if body.bytes > settings.max_upload_bytes:
             raise HTTPException(413, "Upload exceeds the configured size limit")
         if (
@@ -137,8 +147,8 @@ def create_app(settings, parser=None, engine=None):
             "upload_headers": {"Content-Type": body.mime_type},
         }
 
-    @app.put("/v1/uploads/{upload_id}/content")
-    async def upload_content(upload_id: str, request: Request):
+    @app.put("/v1/uploads/{upload_id}/content", response_model=None)
+    async def upload_content(upload_id: str, request: Request) -> Payload:
         upload = store.one("SELECT * FROM uploads WHERE id=?", (upload_id,))
         if not upload:
             raise HTTPException(404, "Upload not found")
@@ -171,8 +181,8 @@ def create_app(settings, parser=None, engine=None):
             )
         return {"status": "uploaded"}
 
-    @app.post("/v1/uploads/{upload_id}/complete")
-    async def complete(upload_id: str):
+    @app.post("/v1/uploads/{upload_id}/complete", response_model=None)
+    async def complete(upload_id: str) -> Payload:
         upload = store.one("SELECT * FROM uploads WHERE id=?", (upload_id,))
         if not upload:
             raise HTTPException(404, "Upload not found")
@@ -187,8 +197,8 @@ def create_app(settings, parser=None, engine=None):
             raise HTTPException(409, "Upload is still in progress")
         return {"id": upload_id, "status": "completed", "file": {"id": upload_id}}
 
-    @app.post("/v1/parse/jobs", status_code=202)
-    async def create_job(body: JobRequest):
+    @app.post("/v1/parse/jobs", status_code=202, response_model=None)
+    async def create_job(body: JobRequest) -> Payload:
         if parser is None:
             raise HTTPException(503, "No parsing engine is configured")
         warnings = []
@@ -253,17 +263,17 @@ def create_app(settings, parser=None, engine=None):
                 ),
             )
         worker.wake.set()
-        response = {"job_id": ident, "status": "queued"}
+        response: Payload = {"job_id": ident, "status": "queued"}
         if warnings:
             response["warnings"] = warnings
         return response
 
-    @app.get("/v1/parse/jobs/{job_id}")
-    async def job_status(job_id: str):
+    @app.get("/v1/parse/jobs/{job_id}", response_model=None)
+    async def job_status(job_id: str) -> Payload:
         job = store.one("SELECT * FROM jobs WHERE id=?", (job_id,))
         if not job:
             raise HTTPException(404, "Job not found")
-        file = {"file_id": job["file_id"], "status": job["status"]}
+        file: Payload = {"file_id": job["file_id"], "status": job["status"]}
         if job["status"] == "completed":
             file["output_files"] = {"zip": {"file_id": job["output_id"]}}
         if job["error"]:
@@ -272,16 +282,17 @@ def create_app(settings, parser=None, engine=None):
                 file["error"]["diagnostics_path"] = str(store.root / "failures" / job_id)
         return {"job_id": job_id, "status": job["status"], "files": [file]}
 
-    @app.delete("/v1/parse/jobs/{job_id}")
-    async def cancel_job(job_id: str):
+    @app.delete("/v1/parse/jobs/{job_id}", response_model=None)
+    async def cancel_job(job_id: str) -> Payload:
         if not store.one("SELECT id FROM jobs WHERE id=?", (job_id,)):
             raise HTTPException(404, "Job not found")
         await worker.cancel(job_id)
-        job = store.one("SELECT status FROM jobs WHERE id=?", (job_id,))
+        # Retention excludes active work; the already checked job survives cancellation.
+        job = cast(SQLiteRecord, store.one("SELECT status FROM jobs WHERE id=?", (job_id,)))
         return {"job_id": job_id, "status": job["status"]}
 
-    @app.get("/v1/files/{file_id}/content")
-    async def file_content(file_id: str):
+    @app.get("/v1/files/{file_id}/content", response_model=None)
+    async def file_content(file_id: str) -> FileResponse:
         job = store.one(
             "SELECT output_id FROM jobs WHERE output_id=? AND status='completed'", (file_id,)
         )
