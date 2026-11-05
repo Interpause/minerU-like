@@ -1,6 +1,6 @@
 [project]
 name = "mineru-like"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local OvisOCR3 document parsing with Zotero-compatible APIs"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"

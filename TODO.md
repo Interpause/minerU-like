@@ -1,6 +1,6 @@
 # Remaining work
 
-Status for **0.2.0**; the `0.1.0` tag remains unchanged. This list distinguishes missing implementation from implemented behavior that still needs real-world validation. Items are not a promise that every optional extension will be added. Completed capabilities and release evidence are recorded in [CHANGELOG.md](CHANGELOG.md).
+Status for **0.2.1**; the `0.1.0` tag remains unchanged. This list distinguishes missing implementation from implemented behavior that still needs real-world validation. Items are not a promise that every optional extension will be added. Completed capabilities and release evidence are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Deployment validation — highest priority
 

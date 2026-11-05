@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-11-05
+
+- Default the suite runner to repo-root `data/llm-for-zotero`, `config.local.toml` and `data/test-tools/node_modules`. Resolve cwebp through the selected application configuration, with explicit overrides and discovery still supported. The documented complete command is now `uv run --locked python scripts/run_tests.py --all`.
+- Mirror console results and prerequisite errors to `data/test-results.log` by default, overwriting it per run. Add `--log-file` for separate logs and preserve failing exit statuses. Update testing and development instructions.
+- Fix two table test fixtures that assigned sequential model replies according to concurrent page arrival. Key replies by page identity and exercise both completion orders with synchronization; retain source-cell and fragment assertions without changing production scheduling or parsing.
+- Validation on Python 3.12: **189 passed, 20 skipped** ordinarily; **190 passed, 19 skipped** with configured real cwebp; all **3 live CPU checks passed** separately. The five related table cases passed 20 consecutive runs. Ruff lint/format, ty and source/wheel builds pass. Two existing Pillow deprecation warnings remain.
+- Plugin prerequisite validation reached the local checkout but could not proceed without the configured TypeScript/fflate packages. Plugin, host Flatpak and CUDA checks were not freshly completed for this patch; existing deployment-validation limits remain.
+
 ## 0.2.0 — 2026-11-05
 
 ### Development contracts and documentation
