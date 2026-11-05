@@ -352,3 +352,21 @@ async def test_formula_placeholder_renders_as_plain_text(context: Path) -> None:
     assert block.metadata["verification_original_type"] == "inline_formula"
     assert block.markdown() == block.content
     assert block.content.startswith("[Unclear formula;")
+
+
+def test_single_atom_script_braces_are_presentation_only() -> None:
+    for left, right in [
+        (r"X_{1}", r"X_1"),
+        (r"K^{A}", r"K^A"),
+        (r"x^{\alpha}", r"x^\alpha"),
+        (r"\(X_{1}\)", r"$X_1$"),
+    ]:
+        assert canonical_math(left) == canonical_math(right)
+    for left, right in [
+        (r"x^{a+b}", r"x^a+b"),
+        (r"x_{12}", r"x_12"),
+        (r"x^{\frac}", r"x^\frac"),
+        (r"x_{A}", r"x_{a}"),
+        (r"x_{1}", r"x^{1}"),
+    ]:
+        assert canonical_math(left) != canonical_math(right)

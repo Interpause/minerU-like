@@ -75,7 +75,14 @@ def canonical_math(value: str) -> str:
     value = re.sub(r"\\(?:dfrac|tfrac)\b", r"\\frac", value)
     value = re.sub(r"\\(?:left|right|displaystyle|textstyle)\b", "", value)
     value = re.sub(r"\\(?:,|;|!|:|quad\b|qquad\b|\s)", "", value)
-    return re.sub(r"\s+", "", value)
+    value = re.sub(r"\s+", "", value)
+    atom_commands = (
+        "alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|"
+        "kappa|lambda|mu|nu|xi|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|"
+        "phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|"
+        "Phi|Psi|Omega|infty|partial|nabla|ell|hbar|imath|jmath"
+    )
+    return re.sub(r"([_^])\{([A-Za-z0-9]|\\(?:" + atom_commands + r"))\}", r"\1\2", value)
 
 
 def formula_is_suspicious(raw: str) -> bool:
