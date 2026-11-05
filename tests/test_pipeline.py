@@ -710,3 +710,66 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
     await Pipeline(Settings(captioning=False), Model()).parse(
         path, path.name, "ocr", "standard", tmp_path / "out"
     )
+
+
+@pytest.mark.asyncio
+async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_path):
+    path = tmp_path / "math.png"
+    Image.new("RGB", (100, 100), "black").save(path)
+
+    class Model:
+        def __init__(self):
+            self.started = 0
+            self.both = asyncio.Event()
+
+        async def infer(self, images, prompt, *, max_tokens=None):
+            if '"category": "string"}' in prompt:
+                return assessment(math=True)[7:]
+            if (
+                prompt
+                == (
+                    Path(__file__).parents[1] / "src/mineru_like/prompts/formula_recognition.txt"
+                ).read_text()
+            ):
+                self.started += 1
+                if self.started == 2:
+                    self.both.set()
+                await asyncio.wait_for(self.both.wait(), timeout=2)
+                return "first" if Path(images[0]).name.endswith("-0.png") else "second"
+            return json.dumps(
+                [
+                    {"bbox": [0, 0, 1000, 500], "category": "display_formula", "content": "x+{"},
+                    {"bbox": [0, 500, 1000, 1000], "category": "display_formula", "content": "y+{"},
+                ]
+            )
+
+    result = await Pipeline(Settings(captioning=False), Model()).parse(
+        path, path.name, "ocr", "standard", tmp_path / "out"
+    )
+    assert [block.content for block in result.pages[0].blocks] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_independent_page_verification_runs_concurrently(tmp_path, monkeypatch):
+    from mineru_like import verification
+
+    path = tmp_path / "pages.tiff"
+    frame = Image.new("RGB", (30, 30), "black")
+    frame.save(path, save_all=True, append_images=[frame])
+    started = []
+    both = asyncio.Event()
+
+    async def verify(pipeline, page, imagepath, diagnostics, *args, **kwargs):
+        started.append(page.page_idx)
+        if len(started) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), timeout=2)
+        page.metadata["verified"] = True
+        return page
+
+    monkeypatch.setattr(verification, "verify_page", verify)
+    result = await Pipeline(
+        Settings(captioning=False, cross_page_tables=False), ParallelRuntime()
+    ).parse(path, path.name, "ocr", "advanced", tmp_path / "out")
+    assert sorted(started) == [0, 1]
+    assert all(page.metadata["verified"] for page in result.pages)

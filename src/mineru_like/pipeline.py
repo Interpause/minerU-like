@@ -11,7 +11,6 @@ import re
 import shutil
 import threading
 import time
-from collections import Counter
 from functools import partial
 from pathlib import Path
 
@@ -26,6 +25,17 @@ CATEGORIES = set(
 IMAGES = {"image", "chart", "header_image", "footer_image", "seal"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".jp2"}
 PDF_LOCK = threading.Lock()
+
+
+async def _gather_cancel(coroutines):
+    tasks = [asyncio.create_task(coroutine) for coroutine in coroutines]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 class _Diagnostics(list):
@@ -687,23 +697,16 @@ class Pipeline:
                 small_regions=small_regions,
             )
 
-        tasks = [asyncio.create_task(parse_page(idx)) for idx in range(count)]
-        try:
-            pages = await asyncio.gather(*tasks)
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
+        pages = await _gather_cancel(parse_page(idx) for idx in range(count))
         if not pages:
             raise ValueError("Document has no pages")
         result = DocumentResult(pages=pages, assets=assets, diagnostics=diagnostics)
         if tier in {"standard", "advanced"}:
             from .verification import verify_page, verify_suspicious_regions
 
-            for page in pages:
+            async def verify_one(page):
                 if not page.blocks:
-                    continue
+                    return
                 recovery = None
                 if suffix == ".pdf":
                     recovery = partial(
@@ -755,6 +758,8 @@ class Pipeline:
                         if suffix == ".pdf"
                         else None,
                     )
+
+            await _gather_cancel(verify_one(page) for page in pages)
         for page in pages:
             for block in page.blocks:
                 if block.image_source and block.image_source not in assets:
@@ -870,78 +875,6 @@ class Pipeline:
                 recover_page=recover_page,
             )
         return result
-
-    async def _merge_tables(self, result, workdir):
-        # A table is replaced only when the model identifies both pages and its
-        # result retains all source cell text. Ambiguous runs stay page-local.
-        replacements = {}
-        used = set()
-        for idx in range(len(result.pages) - 1):
-            left = [(n, b) for n, b in enumerate(result.pages[idx].blocks) if b.type == "table"]
-            right = [
-                (n, b) for n, b in enumerate(result.pages[idx + 1].blocks) if b.type == "table"
-            ]
-            if len(left) != 1 or len(right) != 1 or idx in used or idx + 1 in used:
-                continue
-            prompt = (
-                (PROMPTS / "crosspage_table.txt").read_text()
-                + "\n\nInput Markdown:\n\n"
-                + left[0][1].content
-                + "\n\n--- Page 2 ---\n\n"
-                + right[0][1].content
-            )
-
-            def validate(raw):
-                value = _json(raw)
-                if not isinstance(value, list) or not all(
-                    isinstance(x, dict)
-                    and isinstance(x.get("source_pages"), list)
-                    and isinstance(x.get("html"), str)
-                    for x in value
-                ):
-                    raise ValueError("invalid table reconstruction")
-                return value
-
-            values = await self._infer_valid(
-                [workdir / f"page-{idx}.png", workdir / f"page-{idx + 1}.png"],
-                prompt,
-                validate,
-                result.diagnostics,
-                idx,
-                "cross_page_table",
-            )
-            if len(values) != 1 or values[0]["source_pages"] != [1, 2]:
-                continue
-            merged = values[0]["html"]
-            if not re.fullmatch(r"\s*<table\b[\s\S]*</table\s*>\s*", merged, re.I) or re.search(
-                r"<img\b", merged, re.I
-            ):
-                continue
-
-            def cells(value):
-                return [
-                    re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", cell))).strip()
-                    for cell in re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", value, re.I | re.S)
-                ]
-
-            original = [
-                cell for block in (left[0][1], right[0][1]) for cell in cells(block.content) if cell
-            ]
-            merged_cells = cells(merged)
-            if not original or Counter(original) != Counter(cell for cell in merged_cells if cell):
-                continue
-            replacements[(idx, left[0][0])] = merged
-            replacements[(idx + 1, right[0][0])] = ""
-            left[0][1].metadata["continues_on_page"] = idx + 1
-            right[0][1].metadata["continues_from_page"] = idx
-            used.update((idx, idx + 1))
-        if replacements:
-            chunks = []
-            for page in result.pages:
-                chunks.append(f"<!-- page {page.page_idx + 1} -->")
-                for n, block in enumerate(page.blocks):
-                    chunks.append(replacements.get((page.page_idx, n), block.markdown()))
-            result.markdown_override = "\n\n".join(chunks)
 
     async def _page(
         self,
@@ -1098,6 +1031,38 @@ class Pipeline:
                     Block("image", "", image_source=name),
                 ]
             )
+
+        async def recognize_formula(n, item):
+            content, box = item["content"], item["bbox"]
+            if item["category"] not in {"display_formula", "inline_formula"} or not (
+                self.tier == "advanced" or _risky_formula(content, box, image_size)
+            ):
+                return None
+            crop_path = await asyncio.to_thread(
+                _formula_crop, pdf_path, idx, box, original_image or path, workdir, n, self.settings
+            )
+
+            def formula(raw):
+                if not raw.strip() or raw.lstrip().startswith("```"):
+                    raise ValueError("invalid formula recognition")
+                return raw.strip()
+
+            try:
+                content = await self._infer_valid(
+                    [crop_path],
+                    (PROMPTS / "formula_recognition.txt").read_text(),
+                    formula,
+                    diagnostics,
+                    idx,
+                    "formula",
+                )
+                return content, crop_path
+            except ValueError:
+                return None, crop_path
+
+        formula_results = await _gather_cancel(
+            recognize_formula(n, item) for n, item in enumerate(items)
+        )
         for n, item in enumerate(items):
             category, content, box = item["category"], item["content"], item["bbox"]
             if item.get("_uncertain_alternative"):
@@ -1140,37 +1105,12 @@ class Pipeline:
                         metadata={"warning": "Small-text verification disagrees"},
                     )
                 )
-            if category in {"display_formula", "inline_formula"} and (
-                self.tier == "advanced" or _risky_formula(content, box, image_size)
-            ):
-                crop_path = await asyncio.to_thread(
-                    _formula_crop,
-                    pdf_path,
-                    idx,
-                    box,
-                    original_image or path,
-                    workdir,
-                    n,
-                    self.settings,
-                )
-
-                def formula(raw):
-                    if not raw.strip() or raw.lstrip().startswith("```"):
-                        raise ValueError("invalid formula recognition")
-                    return raw.strip()
-
-                try:
-                    content = await self._infer_valid(
-                        [crop_path],
-                        (PROMPTS / "formula_recognition.txt").read_text(),
-                        formula,
-                        diagnostics,
-                        idx,
-                        "formula",
-                    )
-                except ValueError:
-                    item["_uncertain"] = True
-                    item["_uncertain_crop"] = str(crop_path)
+            formula_result = formula_results[n]
+            if formula_result is not None:
+                recognized, crop_path = formula_result
+                if recognized is not None:
+                    content = recognized
+                else:
                     name = f"images/page_{idx}_formula_{n}.png"
                     target = workdir / name
                     target.parent.mkdir(parents=True, exist_ok=True)
