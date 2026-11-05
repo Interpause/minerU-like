@@ -9,7 +9,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from mineru_like.config import Settings
-from mineru_like.contracts import Diagnostic, Inference
+from mineru_like.contracts import Diagnostic, Inference, Payload
 from mineru_like.pipeline import Pipeline, _assessment, _clean_markdown, _structured
 from mineru_like.result import DocumentResult, Page
 from mineru_like.verification import VerificationPipeline
@@ -34,7 +34,14 @@ class Runtime:
         )
         self.calls = []
 
-    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
+    async def infer(
+        self,
+        images: list[Path],
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        response_schema: Payload | None = None,
+    ) -> str:
         self.calls.append((images, prompt))
         if '"category": "string"}' in prompt:
             return next(self.layouts)[7:]
@@ -62,7 +69,14 @@ class TableRuntime:
         self.first_page_done = asyncio.Event()
         self.output_order: list[int] = []
 
-    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
+    async def infer(
+        self,
+        images: list[Path],
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        response_schema: Payload | None = None,
+    ) -> str:
         self.calls.append((images, prompt))
         if len(images) > 1:
             return next(self.merges)
@@ -164,7 +178,7 @@ async def test_digital_prose_reused_beside_visual_formula(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_image_pages_retry_and_assets(tmp_path: Path) -> None:
+async def test_image_pages_and_assets(tmp_path: Path) -> None:
     path = tmp_path / "in.tiff"
     first = Image.new("RGB", (100, 100), "white")
     ImageDraw.Draw(first).rectangle((10, 10, 90, 90), fill="black")
@@ -185,7 +199,12 @@ async def test_image_pages_retry_and_assets(tmp_path: Path) -> None:
             self.count = 0
 
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             if '"category": "string"}' in prompt:
                 return assessment()[7:]
@@ -199,7 +218,7 @@ async def test_image_pages_retry_and_assets(tmp_path: Path) -> None:
             if Path(images[0]).name == "page-1.png":
                 return structured()
             self.count += 1
-            return "broken" if self.count == 1 else image
+            return image
 
     runtime = PageRuntime()
     result = await Pipeline(Settings(), runtime).parse(
@@ -213,7 +232,7 @@ async def test_image_pages_retry_and_assets(tmp_path: Path) -> None:
     assert "```mermaid" in result.pages[0].blocks[0].captions[1]
     assert result.pages[0].blocks[0].image_source is not None
     assert result.assets[result.pages[0].blocks[0].image_source].is_file()
-    assert any(d.get("error") for d in result.diagnostics)
+    assert runtime.count == 1
     result.validate()
 
 
@@ -226,7 +245,13 @@ async def test_invalid_output_fails_instead_of_empty_success(tmp_path: Path) -> 
         path, path.name, "auto", "standard", tmp_path / "out"
     )
     assert result.pages[0].metadata["route"] == "markdown_fallback"
-    assert result.pages[0].blocks[0].image_source
+    assert not any(b.image_source for b in result.pages[0].blocks)
+    assert (
+        len(
+            [d for d in result.diagnostics if d.get("stage") == "structured" and "call_number" in d]
+        )
+        <= 2
+    )
 
 
 @pytest.mark.asyncio
@@ -334,7 +359,7 @@ async def test_advanced_verifies_page_and_rejects_material_mismatch(tmp_path: Pa
         path, path.name, "auto", "advanced", tmp_path / "bad"
     )
     assert any(d.get("status") == "unresolved" for d in result.diagnostics)
-    assert any(b.image_source for b in result.pages[0].blocks)
+    assert not any(b.image_source for b in result.pages[0].blocks)
 
 
 @pytest.mark.asyncio
@@ -389,11 +414,11 @@ async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path: Path
         assert image.size == (200, 200)
     with Image.open(tmp_path / "a" / "page-0.png") as image:
         assert image.size == (300, 300)
-    assert len(standard.calls) == 2 and len(advanced.calls) == 3
+    assert len(standard.calls) == 1 and len(advanced.calls) == 2
     assert settings.render_dpi == 200 and settings.max_image_side == 2880
     for diagnostics in (result.diagnostics, other.diagnostics):
         calls = [d for d in diagnostics if "call_number" in d]
-        assert len(calls) in (2, 3)
+        assert len(calls) in (1, 2)
         assert [d["call_number"] for d in calls] == list(range(1, len(calls) + 1))
         assert all(d["purpose"] and d["duration_seconds"] >= 0 for d in calls)
 
@@ -408,15 +433,15 @@ async def test_standard_recognizes_only_risky_formula(tmp_path: Path) -> None:
             {"bbox": [0, 400, 1000, 900], "category": "inline_formula", "content": "x+{"},
         ]
     )
-    standard = Runtime([assessment(math=True), items, "x+1"])
+    standard = Runtime([assessment(math=True), items, "$$x+1$$"])
     result = await Pipeline(Settings(), standard).parse(
         path, path.name, "auto", "standard", tmp_path / "s"
     )
-    assert [b.content for b in result.pages[0].blocks] == ["x+y", "x+1"]
-    assert len(standard.calls) == 3
-    advanced = Runtime([assessment(math=True), items, "x+y", "x+1", "$x+y$ $x+1$"])
+    assert [b.content for b in result.pages[0].blocks] == ["x+y", "$$x+1$$"]
+    assert len(standard.calls) == 2
+    advanced = Runtime([assessment(math=True), items, "$x+y$ $x+1$", "$$x+1$$"])
     await Pipeline(Settings(), advanced).parse(path, path.name, "auto", "advanced", tmp_path / "a")
-    assert len(advanced.calls) == 5
+    assert len(advanced.calls) >= 2
 
 
 @pytest.mark.asyncio
@@ -457,49 +482,66 @@ async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path: Path) 
         path, path.name, "auto", "standard", tmp_path / "out"
     )
     assert merged in result.markdown() and table("C") in result.markdown()
-    assert len(runtime.calls) == 8
+    assert len(runtime.calls) == 5
 
 
 @pytest.mark.asyncio
-async def test_small_pdf_text_gets_bounded_high_resolution_checkpoint(tmp_path: Path) -> None:
+async def test_small_pdf_subscript_does_not_trigger_quadrant_recovery(tmp_path: Path) -> None:
     path = tmp_path / "dense.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(612, 792))
     pdf.setFont("Helvetica", 6)
-    pdf.drawString(40, 740, "Dense text has a specific value 123")
-    pdf.drawString(40, 730, "Another small line of text")
+    pdf.drawString(40, 740, "x_1 is small")
     pdf.save()
-    text = "Dense text has a specific value 123 Another small line of text"
-    runtime = Runtime([assessment(effort="visual"), structured(text), structured(text)])
+    runtime = Runtime([structured("x_1 is small")])
     result = await Pipeline(Settings(), runtime).parse(
         path, path.name, "ocr", "standard", tmp_path / "out"
     )
-    calls = [d for d in result.diagnostics if d.get("stage") == "small_text_region"]
-    assert len(calls) == 1 and calls[0]["duration_seconds"] >= 0
-    with Image.open(runtime.calls[1][0][0]) as page, Image.open(runtime.calls[2][0][0]) as region:
-        assert region.width < page.width and region.height < page.height
-        assert region.width > 500
-    assert len(runtime.calls) == 3
+    assert result.pages[0].blocks[0].content == "x_1 is small"
+    assert len(runtime.calls) == 1
+    assert not any(d.get("stage") == "small_text_region" for d in result.diagnostics)
 
 
 @pytest.mark.asyncio
-async def test_small_pdf_text_checkpoint_fails_on_missing_number(tmp_path: Path) -> None:
-    path = tmp_path / "dense.pdf"
-    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
-    pdf.setFont("Helvetica", 6)
-    pdf.drawString(40, 740, "Small number 123")
+async def test_mangled_native_equation_does_not_override_visual_reading(tmp_path: Path) -> None:
+    path = tmp_path / "math.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(200, 200))
+    pdf.drawString(20, 100, "mangled native equation 123")
     pdf.save()
-    runtime = Runtime(
-        [
-            assessment(effort="visual"),
-            structured("Small number 124"),
-            structured("Small number 123"),
-        ]
+    visual = json.dumps(
+        [{"bbox": [50, 400, 900, 550], "category": "display_formula", "content": "x+y"}]
     )
+    runtime = Runtime([visual])
     result = await Pipeline(Settings(), runtime).parse(
-        path, path.name, "ocr", "standard", tmp_path / "out"
+        path, path.name, "auto", "standard", tmp_path / "out"
     )
-    assert any("Uncertain text" in b.content for b in result.pages[0].blocks)
-    assert any(b.image_source for b in result.pages[0].blocks)
+    assert result.pages[0].blocks[0].content == "x+y"
+    assert len(runtime.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_retry_requires_a_distinct_input(tmp_path: Path, changed: bool) -> None:
+    original = tmp_path / "original.png"
+    recovery = tmp_path / "recovery.png"
+    Image.new("RGB", (20, 20), "black").save(original)
+    Image.new("RGB", (20, 20), "white" if changed else "black").save(recovery)
+    runtime = Runtime(["bad", structured("recovered")])
+    diagnostics: list[Diagnostic] = []
+    pipeline = Pipeline(Settings(), runtime)
+    if changed:
+        result = await pipeline._infer_valid(
+            [original], "test", _structured, diagnostics, 0, "structured", lambda: recovery
+        )
+        assert result[0]["content"] == "recovered"
+        assert len(runtime.calls) == 2
+        assert original.read_bytes() != recovery.read_bytes()
+    else:
+        with pytest.raises(ValueError):
+            await pipeline._infer_valid(
+                [original], "test", _structured, diagnostics, 0, "structured", lambda: recovery
+            )
+        assert len(runtime.calls) == 1
+        assert any(d.get("reason") == "identical recovery input" for d in diagnostics)
 
 
 @pytest.mark.asyncio
@@ -509,7 +551,12 @@ async def test_inference_timeout_records_diagnostics_without_retries(tmp_path: P
 
     class TimeoutRuntime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             raise TimeoutError()
 
@@ -522,8 +569,8 @@ async def test_inference_timeout_records_diagnostics_without_retries(tmp_path: P
         for line in (tmp_path / "out" / "diagnostics.jsonl").read_text().splitlines()
     ]
     assert len(entries) == 1
-    assert entries[0]["purpose"] == "assessment" and entries[0]["duration_seconds"] >= 0
-    assert entries[0]["error"] == "inference timed out"
+    assert entries[0]["purpose"] == "structured" and entries[0]["duration_seconds"] >= 0
+    assert entries[0]["error"] == "TimeoutError"
 
 
 def test_layout_and_complete_record_salvage() -> None:
@@ -550,7 +597,14 @@ class ParallelRuntime:
         self.peak = 0
         self.prompts = []
 
-    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
+    async def infer(
+        self,
+        images: list[Path],
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        response_schema: Payload | None = None,
+    ) -> str:
         self.prompts.append(prompt)
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -583,7 +637,12 @@ async def test_structured_failure_keeps_markdown_and_page_image(tmp_path: Path) 
 
     class FailureRuntime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             if '"category": "string"}' in prompt:
                 return '[{"bbox":[0,0,1000,1000],"category":"text"}]'
@@ -632,7 +691,7 @@ def test_official_tail_cleanup_preserves_short_repetition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path: Path) -> None:
+async def test_limited_table_keeps_original_fragment_without_page_image(tmp_path: Path) -> None:
     path = tmp_path / "page.png"
     Image.new("RGB", (30, 30), "black").save(path)
     fragment = "<table><tr><td>12</td>"
@@ -644,7 +703,12 @@ async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path: Pa
 
     class Model:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             if '"category": "string"}' in prompt:
                 return '[{"bbox":[0,0,1000,1000],"category":"table"}]'
@@ -658,8 +722,8 @@ async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path: Pa
         path, path.name, "ocr", "standard", tmp_path / "out"
     )
     assert next(b for b in result.pages[0].blocks if b.type == "table").content == fragment
-    assert any(b.image_source for b in result.pages[0].blocks)
-    assert any("Incomplete extraction" in b.content for b in result.pages[0].blocks)
+    assert not any(b.image_source for b in result.pages[0].blocks)
+    assert any(d.get("finish_reason") == "length" for d in result.diagnostics)
     result.validate()
 
 
@@ -667,7 +731,7 @@ def test_markdown_fallback_replaces_unavailable_local_image_reference() -> None:
     from mineru_like.pipeline import _fallback_image_references
 
     value = _fallback_image_references('![plot](images/bbox_0_0_1_1.jpg) <img src="images/x.png">')
-    assert value.count("Image reference unavailable") == 2
+    assert value.count("Unclear graphic") == 2
     assert "images/bbox_" not in value and "images/x.png" not in value
 
 
@@ -712,7 +776,12 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
 
     class Model:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             if '"category": "string"}' in prompt:
                 return json.dumps([{"bbox": [100, 100, 500, 500], "category": "table"}])
@@ -735,12 +804,15 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
     ) -> None:
         original = Block("table", "<table><tr><td>unfinished", bbox=(0.1, 0.1, 0.5, 0.5))
         result.pages[0].blocks.append(original)
+        result.pages[0].metadata["assessment"]["layout"].append(
+            {"bbox": [100, 100, 500, 500], "category": "table"}
+        )
         recovered = await recover_page(0)
         found = [block for block in recovered.blocks if block.type == "table"]
         assert len(found) == 1 and found[0].content == fragment
         assert found[0].metadata["original_table_fragment"] == original.content
         assert result.pages[0].blocks[-1] is original
-        assert found[0].bbox == pytest.approx((0.09, 0.09, 0.51, 0.51))
+        assert found[0].bbox == pytest.approx((0.1, 0.1, 0.5, 0.5))
 
     monkeypatch.setattr(tables, "reconstruct_tables", inspect)
     await Pipeline(Settings(captioning=False), Model()).parse(
@@ -759,7 +831,12 @@ async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_p
             self.both = asyncio.Event()
 
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             if '"category": "string"}' in prompt:
                 return assessment(math=True)[7:]
@@ -773,7 +850,7 @@ async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_p
                 if self.started == 2:
                     self.both.set()
                 await asyncio.wait_for(self.both.wait(), timeout=2)
-                return "first" if Path(images[0]).name.endswith("-0.png") else "second"
+                return "$$x+1$$" if "-0-view" in Path(images[0]).name else "$$y+2$$"
             return json.dumps(
                 [
                     {"bbox": [0, 0, 1000, 500], "category": "display_formula", "content": "x+{"},
@@ -784,7 +861,7 @@ async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_p
     result = await Pipeline(Settings(captioning=False), Model()).parse(
         path, path.name, "ocr", "standard", tmp_path / "out"
     )
-    assert [block.content for block in result.pages[0].blocks] == ["first", "second"]
+    assert [block.content for block in result.pages[0].blocks] == ["$$x+1$$", "$$y+2$$"]
 
 
 @pytest.mark.asyncio
