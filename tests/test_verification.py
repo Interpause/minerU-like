@@ -376,3 +376,42 @@ def test_math_control_word_boundaries_survive_whitespace_normalization() -> None
     assert canonical_math(r"x^{\alpha}b") == canonical_math(r"x^\alpha b")
     assert canonical_math(r"x^{\alpha}b") != canonical_math(r"x^{\alphab}")
     assert canonical_math(r"\alpha b") != canonical_math(r"\alphab")
+
+
+def test_math_framing_is_ignored_but_structure_is_not() -> None:
+    from mineru_like.verification import _units
+
+    def tokens(value: str) -> list[str]:
+        return [token for token, _ in _units(value)]
+
+    for left, right in [
+        ("capital MPK and F", r"capital $MPK$ and $F$"),
+        ("in period t=1", r"in period $t=1$"),
+        (r"$a>0$, $b>0$", r"$a>0,b>0$"),
+        (r"with $X_{1}$", r"with $X_1$"),
+    ]:
+        assert tokens(left) == tokens(right)
+    for left, right in [
+        (r"$f(x,y)$", r"$f(xy)$"),
+        (r"$x^2$", r"$x_2$"),
+        (r"$F$", r"$f$"),
+        (r"$x^{a+b}$", r"$x^a+b$"),
+        (r"$\alpha b$", r"$\alphab$"),
+    ]:
+        assert tokens(left) != tokens(right)
+
+
+@pytest.mark.asyncio
+async def test_recovered_math_requires_the_complete_aligned_formula(context: Path) -> None:
+    page = Page(0, [Block("equation", "$f(x,y)+1$", bbox=(0, 0, 1, 1))])
+    pipeline = Pipeline("$f(x,y)-1$", "$$f(x,y)-1$$")
+    await verify_page(pipeline, page, context, [])
+    assert page.blocks[0].content == "$$f(x,y)-1$$"
+
+
+@pytest.mark.asyncio
+async def test_benign_math_segmentation_skips_region_inference(context: Path) -> None:
+    page = Page(0, [Block("text", r"For $a>0$, $b>0$ let MPK apply at t=1.", bbox=(0, 0, 1, 1))])
+    pipeline = Pipeline(r"For $a>0,b>0$ let $MPK$ apply at $t=1$.")
+    await verify_page(pipeline, page, context, [])
+    assert pipeline.stages == ["advanced_markdown"]

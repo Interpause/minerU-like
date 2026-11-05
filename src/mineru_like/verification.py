@@ -130,16 +130,67 @@ _FORMULAS = {
 _IGNORED = {"image", "chart", "header_image", "footer_image"}
 
 
+def _plain_units(text: str) -> list[tuple[str, str]]:
+    text = re.sub(r"(?im)^\s*\|?[\s:|-]+\|[\s:|-]*$", "", text)
+    text = re.sub(r"(?m)^\s*\|", "", text)
+    text = re.sub(r"(?m)\|\s*$", "", text)
+    text = re.sub(r"(?i)</t[dh]>\s*</tr>", "</tr>", text)
+    text = re.sub(r"(?i)</t[dh]>", " | ", text)
+    text = unescape(re.sub(r"<[^>]*>", " ", text))
+    text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text)
+    text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text).replace("−", "-")
+    result = []
+    for token in re.findall(r"\d+(?:[.,]\d+)*|[^\W\d_]+|[+\-*/=<>±×÷≤≥≠∑∫|]", text):
+        key = (
+            token
+            if (len(token) == 1 and token.isalpha()) or (token.isupper() and token.isalpha())
+            else token.casefold()
+        )
+        result.append((key, token))
+    return result
+
+
+def _math_units(text: str) -> list[tuple[str, str]]:
+    atoms = canonical_math(text).split("\0")
+    if atoms == [","]:
+        return [(",", "$,$")]
+    tokens: list[str] = []
+    for atom in atoms:
+        if not atom:
+            continue
+        if (
+            len(atom) == 1
+            and atom.isalnum()
+            and tokens
+            and tokens[-1].isalnum()
+            and tokens[-1][-1].isalpha() == atom.isalpha()
+        ):
+            tokens[-1] += atom
+        else:
+            tokens.append(atom)
+    result = []
+    depth = 0
+    for token in tokens:
+        if token in ("(", "[", "{"):
+            depth += 1
+        if token == "," and depth == 0:
+            continue
+        result.append((token, "$" + token + "$"))
+        if token in (")", "]", "}"):
+            depth = max(0, depth - 1)
+    return result
+
+
 def _units(text: str, *, formula: bool = False) -> list[tuple[str, str]]:
     if formula:
-        return [("math:" + canonical_math(text), text)]
+        return _math_units(text)
     result: list[tuple[str, str]] = []
     pos = 0
     for match in _MATH.finditer(text):
-        result.extend(("text:" + token, token) for token in _sequence(text[pos : match.start()]))
-        result.append(("math:" + canonical_math(match.group()), match.group()))
+        result.extend(_plain_units(text[pos : match.start()]))
+        result.extend(_math_units(match.group()))
         pos = match.end()
-    result.extend(("text:" + token, token) for token in _sequence(text[pos:]))
+    result.extend(_plain_units(text[pos:]))
     return result
 
 
@@ -330,11 +381,14 @@ async def _recover(
             if expected is None:
                 break
             agrees = (
-                (canonical_math(candidate) == canonical_math(expected))
+                (
+                    [u[0] for u in _units(candidate, formula=True)]
+                    == [u[0] for u in _units(expected)]
+                )
                 if is_formula
                 else ([u[0] for u in _units(candidate)] == [u[0] for u in _units(expected)])
                 if inline_math
-                else _agree(candidate, expected)
+                else [u[0] for u in _units(candidate)] == [u[0] for u in _units(expected)]
             )
             if agrees:
                 break
@@ -344,7 +398,7 @@ async def _recover(
         else bool(original.strip()) and "�" not in original and "???" not in original
     )
     matches = (
-        (canonical_math(candidate) == canonical_math(expected))
+        ([u[0] for u in _units(candidate, formula=True)] == [u[0] for u in _units(expected)])
         if is_formula and candidate and expected
         else bool(
             candidate
@@ -352,7 +406,7 @@ async def _recover(
             and (
                 [u[0] for u in _units(candidate)] == [u[0] for u in _units(expected)]
                 if inline_math
-                else _agree(candidate, expected)
+                else [u[0] for u in _units(candidate)] == [u[0] for u in _units(expected)]
             )
         )
     )
@@ -467,26 +521,26 @@ async def verify_page(
                 }
             )
             continue
-        inline_math = block.type not in _FORMULAS and any(
-            left[i].startswith("math:") for i, owner in enumerate(owners) if owner == index
-        )
-        # For text, recover the whole block against context-bounded independent units.
+        inline_math = block.type not in _FORMULAS and bool(_MATH.search(block.content))
+        # Reconstruct the complete aligned block, including unchanged context.
         expected = " ".join(differences[index])
-        if block.type not in _FORMULAS:
-            own_positions = [i for i, owner in enumerate(owners) if owner == index]
-            if own_positions:
-                mapping = SequenceMatcher(
-                    None, left, [x[0] for x in right], autojunk=False
-                ).get_opcodes()
-                selected: list[str] = []
-                start, end = own_positions[0], own_positions[-1] + 1
-                for tag, a, b, c, d in mapping:
-                    if b <= start or a >= end:
+        own_positions = [i for i, owner in enumerate(owners) if owner == index]
+        if own_positions:
+            mapping = SequenceMatcher(
+                None, left, [x[0] for x in right], autojunk=False
+            ).get_opcodes()
+            selected: list[str] = []
+            start, end = own_positions[0], own_positions[-1] + 1
+            for tag, a, b, c, d in mapping:
+                if tag == "insert":
+                    if not start < a < end:
                         continue
-                    if tag == "equal":
-                        c, d = c + max(start - a, 0), c + min(end - a, b - a)
-                    selected.extend(right[j][1] for j in range(c, d))
-                expected = " ".join(selected)
+                elif b <= start or a >= end:
+                    continue
+                if tag == "equal":
+                    c, d = c + max(start - a, 0), c + min(end - a, b - a)
+                selected.extend(right[j][1] for j in range(c, d))
+            expected = " ".join(selected)
         recoveries.append(
             _recover(
                 pipeline,
