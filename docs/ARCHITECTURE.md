@@ -6,6 +6,35 @@ The document pipeline uses visual inference for PDF and image pages, and DocVort
 
 Managed inference starts and owns a llama-server subprocess. External mode sends requests to an independently operated service. Independent requests share backend slots; cancellation is scoped to the job. See [configuration](CONFIGURATION.md) for resource settings.
 
+## Data flow and interfaces
+
+1. `cli.py` starts the configured runtime and `DocumentProcessor`, or acts as an HTTP client. `api.py` validates uploads and jobs, enforces authentication and reserves storage through `store.py`.
+2. `worker.py` claims queued jobs and invokes the parser with an input path, filename, tier, OCR mode and work directory. `processor.py` runs `pipeline.py`, improves source assets, compresses delivery assets and validates references. `result.py` serializes the resulting pages, blocks, assets and diagnostics to a ZIP.
+3. The visual pipeline calls `runtime.py` for independent model requests; `native.py` and `libreoffice.py` handle native extraction and optional rendering. `verification.py` and `tables.py` support recovery and cross-page reconstruction; `svg_assets.py`, `compression.py` and `fidelity.py` handle delivery assets.
+4. The worker publishes the ZIP and its ID only after successful writing and storage admission. Clients retrieve it through the file route.
+
+`contracts.py` defines structural `Parser`, `ResultWriter`, `Inference` and `Engine` protocols at these boundaries. `Payload`, `Diagnostic` and `SQLiteRecord` capture dynamically shaped model/HTTP data and SQLite projections; their values can contain `Any`. This keeps extension data and partial query results explicit without asserting a single rigid schema.
+
+## HTTP routes and lifecycle
+
+The implemented routes are listed below; request validation and response shapes are defined in [api.py](../src/mineru_like/api.py). Health is unauthenticated; with a configured API key, the other routes require Bearer authentication.
+
+| Method and route | Purpose |
+| --- | --- |
+| GET `/v1/health` | Service and engine state |
+| GET `/v1/tiers` | Supported tiers |
+| POST `/v1/uploads` | Reserve an upload |
+| PUT `/v1/uploads/{upload_id}/content` | Transfer its declared bytes |
+| POST `/v1/uploads/{upload_id}/complete` | Complete the upload and obtain a file ID |
+| POST `/v1/parse/jobs` | Queue one complete uploaded file for ZIP output |
+| GET `/v1/parse/jobs/{job_id}` | Poll status, error or output ID |
+| DELETE `/v1/parse/jobs/{job_id}` | Cancel an active job |
+| GET `/v1/files/{file_id}/content` | Download the completed ZIP |
+
+Uploads progress from pending through uploading back to pending after transfer, then to completed on confirmation. Jobs enter `queued`, become `running`, and finish `completed`, `failed` or `canceled`. Restart marks running jobs failed; queued jobs with a changed effective configuration fail and must be resubmitted, while compatible queued jobs resume. Canceling a terminal job leaves its status unchanged. See [operations](OPERATIONS.md) for retention and diagnostics.
+
+HTTP validation distinguishes invalid options/metadata (400), missing objects (404), conflicts (409), upload limits (413), unsupported formats (415), exhausted storage (429) and a missing parser (503). Processing failures become failed jobs with an error and, when preserved, a diagnostics path. A malformed model response may instead yield explicitly incomplete recovery with evidence; uncertainty and truncation must not be represented as complete output. Infrastructure failures are not successful fallback results.
+
 ## PDF and SVG dependencies
 
 These libraries have different production roles rather than interchangeable duplicate backends:
