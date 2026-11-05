@@ -23,14 +23,17 @@ def test_default_data_layout_and_preserved_token_limits(tmp_path, monkeypatch):
     settings = load_settings()
     assert Settings().data_dir.name == "data"
     assert settings.data_dir == tmp_path / "data"
-    assert settings.runtime.binary == tmp_path / "data/b12110/llama-server"
+    assert settings.runtime.binary is None
     assert settings.runtime.model == tmp_path / "data/models/OvisOCR3.Q8_0.gguf"
     assert settings.runtime.mmproj == tmp_path / "data/models/OvisOCR3.mmproj-bf16.gguf"
     assert settings.runtime.kv_cache == "bf16"
     assert settings.runtime.context_size == 32768
     assert settings.runtime.max_tokens == 16384
     assert settings.runtime.image_min_tokens == 1024
-    assert settings.runtime.parallel_slots == 1
+    assert settings.runtime.parallel_slots == 4
+    assert settings.runtime.batch_size == settings.runtime.ubatch_size == 1024
+    assert settings.runtime.image_max_tokens is None
+    assert settings.runtime.request_timeout is None
 
 
 def test_paths_follow_config_location_and_custom_data_directory(tmp_path, monkeypatch):
@@ -49,3 +52,25 @@ def test_paths_follow_config_location_and_custom_data_directory(tmp_path, monkey
 def test_invalid_parallel_slots(slots):
     with pytest.raises(ValidationError):
         RuntimeSettings(parallel_slots=slots)
+
+
+def test_binary_discovery_and_ambiguity(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    first = tmp_path / "data/b123/llama-server"
+    first.parent.mkdir(parents=True)
+    first.touch()
+    assert load_settings().runtime.binary == first
+    second = tmp_path / "data/llama-b456/llama-server"
+    second.parent.mkdir()
+    second.touch()
+    with pytest.raises(ValueError, match="Multiple llama-server"):
+        load_settings()
+    config = tmp_path / "config.toml"
+    config.write_text('[runtime]\nbinary="data/b123/llama-server"\n')
+    assert load_settings(config).runtime.binary == first
+
+
+@pytest.mark.parametrize("value", [0, -2])
+def test_invalid_image_max_tokens(value):
+    with pytest.raises(ValidationError):
+        RuntimeSettings(image_max_tokens=value)

@@ -19,14 +19,23 @@ class RuntimeSettings(BaseModel):
     device: Literal["auto", "cuda", "cpu"] = "auto"
     context_size: int = Field(32768, ge=4096)
     max_tokens: int = Field(16384, ge=256)
-    parallel_slots: int = Field(1, ge=1)
+    parallel_slots: int = Field(4, ge=1)
     image_min_tokens: int = Field(1024, ge=1)
-    image_max_tokens: int = Field(4096, ge=1)
-    batch_size: int = Field(512, ge=1)
-    ubatch_size: int = Field(128, ge=1)
+    image_max_tokens: int | None = Field(None, ge=-1)
+    batch_size: int = Field(1024, ge=1)
+    ubatch_size: int = Field(1024, ge=1)
     startup_timeout: float = Field(300, gt=0)
-    request_timeout: float = Field(600, gt=0)
-    kv_cache: Literal["bf16", "f16", "q8_0"] = "bf16"
+    request_timeout: float | None = Field(None, gt=0)
+    kv_cache: Literal["bf16", "f16", "q8_0"] | None = "bf16"
+    kv_cache_k: Literal["bf16", "f16", "q8_0"] | None = None
+    kv_cache_v: Literal["bf16", "f16", "q8_0"] | None = None
+
+    @field_validator("image_max_tokens")
+    @classmethod
+    def valid_image_max_tokens(cls, value):
+        if value == 0:
+            raise ValueError("image_max_tokens must be positive, -1, or omitted")
+        return value
 
 
 class LibreOfficeSettings(BaseModel):
@@ -83,7 +92,7 @@ class Settings(BaseModel):
     port: int = Field(8000, ge=1, le=65535)
     max_upload_bytes: int = Field(512 * 1024 * 1024, ge=1)
     max_storage_bytes: int = Field(8 * 1024 * 1024 * 1024, ge=1)
-    queue_size: int = Field(8, ge=1)
+    queue_size: int = Field(8, ge=1, deprecated=True)
     retention_hours: float = Field(24, gt=0)
     upload_retention_hours: float = Field(1, gt=0)
     render_dpi: int = Field(200, ge=72, le=600)
@@ -113,10 +122,23 @@ def load_settings(path: Path | None = None) -> Settings:
 
     settings.data_dir = resolve(settings.data_dir)
     defaults = {
-        "binary": settings.data_dir / "b12110" / "llama-server",
         "model": settings.data_dir / "models" / "OvisOCR3.Q8_0.gguf",
         "mmproj": settings.data_dir / "models" / "OvisOCR3.mmproj-bf16.gguf",
     }
+    if settings.runtime.binary is not None:
+        settings.runtime.binary = resolve(settings.runtime.binary)
+    elif settings.runtime.mode == "managed":
+        candidates = sorted(
+            {
+                p
+                for pattern in ("b*/llama-server", "llama-b*/llama-server")
+                for p in settings.data_dir.glob(pattern)
+                if p.is_file()
+            }
+        )
+        if len(candidates) > 1:
+            raise ValueError("Multiple llama-server binaries found; set runtime.binary explicitly")
+        settings.runtime.binary = candidates[0] if candidates else None
     for field, default in defaults.items():
         value = getattr(settings.runtime, field)
         if value is not None:

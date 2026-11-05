@@ -37,8 +37,10 @@ async def test_vision_request_and_incomplete_response(tmp_path):
     image = tmp_path / "page.png"
     image.write_bytes(b"image data")
     await runtime.start()
-    with pytest.raises(InferenceError, match="Incomplete"):
-        await runtime.infer([image, image], "prompt")
+    result = await runtime.infer([image, image], "prompt")
+    assert result == result.raw_text == "partial"
+    assert result.finish_reason == "length"
+    assert result.usage == {}
     payload = json.loads(requests[-1].content)
     assert payload["model"] == "vision"
     assert [part["type"] for part in payload["messages"][0]["content"]] == [
@@ -131,9 +133,15 @@ async def test_managed_command_and_subprocess_library_environment(monkeypatch, t
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
     runtime = InferenceRuntime(
-        RuntimeSettings(parallel_slots=3, context_size=32768, batch_size=1024, ubatch_size=256)
+        RuntimeSettings(
+            parallel_slots=3,
+            context_size=32768,
+            batch_size=1024,
+            ubatch_size=256,
+            kv_cache_k="f16",
+            image_max_tokens=-1,
+        )
     )
-    await runtime._check_version(binary)
     runtime.device = await runtime._select_device(binary)
 
     async def ready():
@@ -150,9 +158,11 @@ async def test_managed_command_and_subprocess_library_environment(monkeypatch, t
     assert value("--ctx-size") == str(3 * 32768)
     assert value("--batch-size") == "1024"
     assert value("--ubatch-size") == "256"
-    assert value("--cache-type-k") == value("--cache-type-v") == "bf16"
+    assert value("--cache-type-k") == "f16"
+    assert value("--cache-type-v") == "bf16"
     assert "--no-kv-unified" in command
-    assert "--no-cont-batching" in command
+    assert "--no-cont-batching" not in command
+    assert "--image-max-tokens" not in command
     for _, kwargs in calls:
         assert kwargs["env"]["LD_LIBRARY_PATH"] == f"{binary.parent}:/existing/lib"
     assert os.environ["LD_LIBRARY_PATH"] == "/existing/lib"
@@ -185,23 +195,6 @@ def test_rejects_invalid_gguf(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rejects_wrong_server_version(monkeypatch):
-    class Probe:
-        returncode = 0
-
-        async def communicate(self):
-            return b"version: 0.9.0-dev (build 9999, commit cd959bae9)", b""
-
-    async def launch(*args, **kwargs):
-        return Probe()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
-    runtime = InferenceRuntime(RuntimeSettings())
-    with pytest.raises(InferenceError, match="build 12110"):
-        await runtime._check_version("server")
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["managed", "external"])
 async def test_absolute_request_timeout_respects_ownership(tmp_path, mode):
     async def handler(request):
@@ -219,7 +212,7 @@ async def test_absolute_request_timeout_respects_ownership(tmp_path, mode):
     image.write_bytes(b"image")
     with pytest.raises(TimeoutError):
         await runtime.infer([image], "prompt")
-    assert runtime.state == ("stopped" if mode == "managed" else "ready")
+    assert runtime.state == "ready"
     await runtime.close()
 
 
@@ -234,49 +227,40 @@ async def test_external_v1_base_url_normalization():
 
 
 @pytest.mark.asyncio
-async def test_repeated_cancellation_waits_for_owned_cleanup(monkeypatch, tmp_path):
+async def test_concurrent_managed_requests_and_cancellation(tmp_path):
     entered = asyncio.Event()
     release = asyncio.Event()
-    reaped = asyncio.Event()
-
-    class Child:
-        pid = 123456
-        returncode = None
-
-        async def wait(self):
-            entered.set()
-            await release.wait()
-            self.returncode = -15
-            reaped.set()
+    count = 0
 
     async def handler(request):
-        if request.url.path == "/tokenize":
-            return httpx.Response(200, json={"tokens": [1]})
-        await asyncio.Event().wait()
+        nonlocal count
+        count += 1
+        if count == 2:
+            entered.set()
+        await release.wait()
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"completion_tokens": 2},
+            },
+        )
 
-    signals = []
-    monkeypatch.setattr(
-        "mineru_like.runtime.os.killpg", lambda pid, sig: signals.append((pid, sig))
-    )
     runtime = InferenceRuntime(RuntimeSettings(mode="managed"))
     runtime._client = httpx.AsyncClient(
         base_url="http://server", transport=httpx.MockTransport(handler)
     )
-    runtime._process = Child()
     runtime.state = "ready"
     image = tmp_path / "page.png"
     image.write_bytes(b"image")
-    task = asyncio.create_task(runtime.infer([image], "prompt"))
-    await asyncio.sleep(0.01)
-    task.cancel()
+    first = asyncio.create_task(runtime.infer([image], "one"))
+    second = asyncio.create_task(runtime.infer([image], "two"))
     await asyncio.wait_for(entered.wait(), 1)
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done()
-    assert signals and not reaped.is_set()
-    release.set()
+    first.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await task
-    assert reaped.is_set()
-    assert runtime._process is None
-    assert runtime.state == "stopped"
+        await first
+    release.set()
+    result = await second
+    assert result == "ok" and result.usage == {"completion_tokens": 2}
+    assert runtime.state == "ready"
+    await runtime.close()
