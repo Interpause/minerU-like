@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import ctypes
+import hashlib
 import html
 import json
 import re
 import shutil
 import threading
 import time
-from collections.abc import Callable, Coroutine, Iterable, Sequence
+from collections.abc import Callable, Collection, Coroutine, Iterable, Sequence
+from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast, overload
@@ -20,7 +21,9 @@ from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from .config import Settings
 from .contracts import Diagnostic, Inference, Payload
+from .geometry import ImageGeometry, ovis_size
 from .result import Block, DocumentResult, Page
+from .schemas import cross_page_schema, layout_schema, structured_schema
 
 T = TypeVar("T")
 
@@ -99,106 +102,8 @@ def _pdf_snapshot(
                     target = workdir / f"recovery-{idx}.png"
                     image.save(target)
                     return target
-                textpage = page.get_textpage()
-                try:
-                    native = textpage.get_text_range()
-                finally:
-                    textpage.close()
-                objects = list(page.get_objects())
-                has_raster = any(obj.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE for obj in objects)
-                invisible = any(
-                    obj.type == pdfium.raw.FPDF_PAGEOBJ_TEXT
-                    and pdfium.raw.FPDFTextObj_GetTextRenderMode(obj.raw) in (3, 7)
-                    for obj in objects
-                )
-                uncertain = (
-                    has_raster
-                    or any(
-                        obj.type == pdfium.raw.FPDF_PAGEOBJ_PATH
-                        or (
-                            obj.type == pdfium.raw.FPDF_PAGEOBJ_TEXT
-                            and _uncertain_text_object(obj, pdfium.raw)
-                        )
-                        for obj in objects
-                    )
-                    or bool(re.search(r"[∑∫√∂∇≈≠≤≥±×÷∞∈∏]|[\u0370-\u03ff]", native))
-                )
-                small_regions = _small_text_regions(page, objects, pdfium.raw)
-                return image, native, uncertain, not has_raster and not invisible, small_regions
-            finally:
-                page.close()
-        finally:
-            pdf.close()
-
-
-def _small_text_regions(page: Any, objects: list[Any], raw: Any) -> list[list[float]]:
-    """Group visible small PDF text into at most four bounded page regions."""
-    if page.get_rotation() != 0:
-        return []
-    width, height = page.get_size()
-    groups = {}
-    for obj in objects:
-        if obj.type != raw.FPDF_PAGEOBJ_TEXT or raw.FPDFTextObj_GetTextRenderMode(obj.raw) in (
-            3,
-            7,
-        ):
-            continue
-        size = ctypes.c_float()
-        if not raw.FPDFTextObj_GetFontSize(obj.raw, ctypes.byref(size)) or not 0 < size.value < 8:
-            continue
-        left, bottom, right, top = obj.get_bounds()
-        if right <= left or top <= bottom:
-            continue
-        x0, y0, x1, y1 = (
-            max(0, min(1000, v))
-            for v in (
-                left * 1000 / width,
-                (height - top) * 1000 / height,
-                right * 1000 / width,
-                (height - bottom) * 1000 / height,
-            )
-        )
-        if x1 <= x0 or y1 <= y0:
-            continue
-        key = (int((x0 + x1) >= 1000), int((y0 + y1) >= 1000))
-        groups.setdefault(key, []).append((x0, y0, x1, y1))
-    return [
-        [
-            max(0, min(box[0] for box in boxes) - 15),
-            max(0, min(box[1] for box in boxes) - 15),
-            min(1000, max(box[2] for box in boxes) + 15),
-            min(1000, max(box[3] for box in boxes) + 15),
-        ]
-        for boxes in groups.values()
-    ]
-
-
-def _native_regions(path: Path, idx: int, items: list[Payload]) -> dict[int, str]:
-    import pypdfium2 as pdfium
-
-    with PDF_LOCK:
-        pdf = pdfium.PdfDocument(path)
-        try:
-            page = pdf[idx]
-            try:
-                if page.get_rotation() != 0:
-                    return {}
-                width, height = page.get_size()
-                text = page.get_textpage()
-                try:
-                    return {
-                        n: text.get_text_bounded(
-                            box[0] * width / 1000,
-                            (1000 - box[3]) * height / 1000,
-                            box[2] * width / 1000,
-                            (1000 - box[1]) * height / 1000,
-                        ).strip()
-                        for n, item in enumerate(items)
-                        if item["category"] in {"text", "abstract", "content", "reference_content"}
-                        for box in [item["bbox"]]
-                    }
-                finally:
-                    text.close()
+                # Page content is read visually; native text is not transcription evidence.
+                return image, "", True, False, []
             finally:
                 page.close()
         finally:
@@ -211,6 +116,98 @@ def _image_frame(path: Path, index: int) -> Image.Image:
         return ImageOps.exif_transpose(source).convert("RGB")
 
 
+def _image_geometry(size: tuple[int, int], settings: Settings) -> ImageGeometry:
+    maximum = settings.runtime.image_max_tokens
+    effective = (
+        ovis_size(size, settings.runtime.image_min_tokens, maximum)
+        if settings.runtime.mode == "managed" and maximum not in (None, -1)
+        else None
+    )
+    return ImageGeometry(size, size, size, effective)
+
+
+def _pdf_glyphs(path: Path, index: int) -> tuple[tuple[float, float], list[Payload]]:
+    """Read visible digital glyph geometry, never their mathematical meaning."""
+    import pypdfium2 as pdfium
+
+    with PDF_LOCK:
+        with pdfium.PdfDocument(path) as doc:
+            page = doc[index]
+            try:
+                width, height = page.get_size()
+                # OCR-layer geometry and rotated coordinate systems are not reliable hints.
+                if page.get_rotation() or any(
+                    obj.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE for obj in page.get_objects()
+                ):
+                    return (width, height), []
+                text = page.get_textpage()
+                try:
+                    glyphs: list[Payload] = []
+                    for i in range(min(text.count_chars(), 100_000)):
+                        char = text.get_text_range(i, 1)
+                        if not char.isalnum():
+                            continue
+                        left, bottom, right, top = text.get_charbox(i)
+                        if right <= left or top <= bottom:
+                            continue
+                        glyphs.append(
+                            {
+                                "bbox": (
+                                    left * 1000 / width,
+                                    (height - top) * 1000 / height,
+                                    right * 1000 / width,
+                                    (height - bottom) * 1000 / height,
+                                ),
+                                "height": top - bottom,
+                            }
+                        )
+                    return (width, height), glyphs
+                finally:
+                    text.close()
+            finally:
+                page.close()
+
+
+def _crop_bounds(
+    box: Sequence[float],
+    size: tuple[int, int],
+    settings: Settings,
+    neighbors: Sequence[Sequence[float]] = (),
+    *,
+    view: int = 0,
+    graphics: bool = False,
+) -> tuple[float, float, float, float]:
+    x0, y0, x1, y1 = map(float, box)
+    if not 0 <= x0 < x1 <= 1000 or not 0 <= y0 < y1 <= 1000:
+        raise ValueError("Invalid crop bounds")
+    if graphics:
+        return x0, y0, x1, y1
+    effective = _image_geometry(size, settings).effective_size or size
+    dx, dy = (
+        (4 if view == 0 else 8) * 1000 / effective[0],
+        (4 if view == 0 else 8) * 1000 / effective[1],
+    )
+    left, top, right, bottom = (
+        max(0, x0 - dx),
+        max(0, y0 - dy),
+        min(1000, x1 + dx),
+        min(1000, y1 + dy),
+    )
+    # A small context margin must not extend into a separate neighboring line/block.
+    for nx0, ny0, nx1, ny1 in neighbors:
+        if nx0 < x1 and nx1 > x0:
+            if ny1 <= y0:
+                top = max(top, (ny1 + y0) / 2)
+            if ny0 >= y1:
+                bottom = min(bottom, (ny0 + y1) / 2)
+        if ny0 < y1 and ny1 > y0:
+            if nx1 <= x0:
+                left = max(left, (nx1 + x0) / 2)
+            if nx0 >= x1:
+                right = min(right, (nx0 + x1) / 2)
+    return left, top, right, bottom
+
+
 def _formula_crop(
     pdf_path: Path | None,
     index: int,
@@ -219,66 +216,183 @@ def _formula_crop(
     workdir: Path,
     ordinal: int,
     settings: Settings,
+    *,
+    neighbors: Sequence[Sequence[float]] = (),
+    view: int = 0,
+    graphics: bool = False,
 ) -> Path:
-    target = workdir / f"formula-{index}-{ordinal}.png"
-    x0, y0, x1, y1 = box
-    margin = 10
-    x0, y0, x1, y1 = (
-        max(0, x0 - margin),
-        max(0, y0 - margin),
-        min(1000, x1 + margin),
-        min(1000, y1 + margin),
-    )
+    target = workdir / f"formula-{index}-{ordinal}-view{view}.png"
     if pdf_path:
         import pypdfium2 as pdfium
 
         with PDF_LOCK:
-            pdf = pdfium.PdfDocument(pdf_path)
-            try:
+            with pdfium.PdfDocument(pdf_path) as pdf:
                 page = pdf[index]
                 try:
                     width, height = page.get_size()
-                    region_width = (x1 - x0) * width / 1000
-                    region_height = (y1 - y0) * height / 1000
+                    render_scale = min(
+                        settings.render_dpi / 72, settings.max_image_side / max(width, height)
+                    )
+                    size = (
+                        max(1, round(width * render_scale)),
+                        max(1, round(height * render_scale)),
+                    )
+                    x0, y0, x1, y1 = _crop_bounds(
+                        box, size, settings, neighbors, view=view, graphics=graphics
+                    )
                     scale = min(
-                        settings.render_dpi * 1.5 / 72,
-                        settings.max_image_side / max(region_width, region_height),
+                        settings.render_dpi * (1.5 if view == 0 else 2.25) / 72,
+                        settings.max_image_side
+                        / max((x1 - x0) * width / 1000, (y1 - y0) * height / 1000),
                     )
-                    crop = (
-                        x0 * width / 1000,
-                        (1000 - y1) * height / 1000,
-                        (1000 - x1) * width / 1000,
-                        y0 * height / 1000,
-                    )
-                    page.render(scale=scale, crop=crop).to_pil().convert("RGB").save(target)
+                    page.render(
+                        scale=scale,
+                        crop=(
+                            x0 * width / 1000,
+                            (1000 - y1) * height / 1000,
+                            (1000 - x1) * width / 1000,
+                            y0 * height / 1000,
+                        ),
+                    ).to_pil().convert("RGB").save(target)
                 finally:
                     page.close()
-            finally:
-                pdf.close()
     else:
+
+        def save(source: Image.Image) -> None:
+            x0, y0, x1, y1 = _crop_bounds(
+                box, source.size, settings, neighbors, view=view, graphics=graphics
+            )
+            w, h = source.size
+            left, top = min(w - 1, int(x0 * w / 1000)), min(h - 1, int(y0 * h / 1000))
+            right, bottom = (
+                min(w, max(left + 1, round(x1 * w / 1000))),
+                min(h, max(top + 1, round(y1 * h / 1000))),
+            )
+            source.crop((left, top, right, bottom)).save(target)
+
         if isinstance(image, (str, Path)):
             with Image.open(image) as source:
-                width, height = source.size
-                source.crop(
-                    (
-                        int(x0 * width / 1000),
-                        int(y0 * height / 1000),
-                        int(x1 * width / 1000),
-                        int(y1 * height / 1000),
-                    )
-                ).save(target)
+                save(source)
+        elif isinstance(image, Image.Image):
+            save(image)
         else:
-            image = cast(Image.Image, image)
-            width, height = image.size
-            image.crop(
-                (
-                    int(x0 * width / 1000),
-                    int(y0 * height / 1000),
-                    int(x1 * width / 1000),
-                    int(y1 * height / 1000),
-                )
-            ).save(target)
+            raise ValueError("Crop requires source evidence")
     return target
+
+
+def _recovery_crop(
+    pdf_path: Path | None,
+    index: int,
+    box: Sequence[float],
+    image: Path | None,
+    workdir: Path,
+    ordinal: int,
+    settings: Settings,
+    block_bounds: Sequence[Sequence[float]],
+    view: int,
+) -> Path | None:
+    neighbors = [[v * 1000 for v in b] for b in block_bounds]
+    if pdf_path:
+        _, glyphs = _pdf_glyphs(pdf_path, index)
+        neighbors.extend(g["bbox"] for g in glyphs)
+    return _formula_crop(
+        pdf_path, index, box, image, workdir, ordinal, settings, neighbors=neighbors, view=view
+    )
+
+
+def _flag_resolution_risks(
+    blocks: list[Block],
+    size: tuple[int, int],
+    geometry: ImageGeometry,
+    pdf: Path | None,
+    index: int,
+    settings: Settings,
+    diagnostics: list[Diagnostic],
+) -> None:
+    if geometry.effective_size is None:
+        return
+    glyphs = _pdf_glyphs(pdf, index)[1] if pdf else []
+    for block in blocks:
+        if block.bbox is None or block.type not in {
+            "equation",
+            "inline_formula",
+            "text",
+            "content",
+        }:
+            continue
+        x0, y0, x1, y1 = [v * 1000 for v in block.bbox]
+        heights = [
+            (g["bbox"][3] - g["bbox"][1]) * geometry.effective_size[1] / 1000
+            for g in glyphs
+            if x0 <= (g["bbox"][0] + g["bbox"][2]) / 2 <= x1
+            and y0 <= (g["bbox"][1] + g["bbox"][3]) / 2 <= y1
+        ]
+        if not heights:
+            continue
+        # Predict the crop's actual model view, not an arbitrary page-bbox height.
+        crop_size = (
+            max(1, round((x1 - x0) * size[0] / 1000 * 1.5)),
+            max(1, round((y1 - y0) * size[1] / 1000 * 1.5)),
+        )
+        crop_geometry = _image_geometry(crop_size, settings)
+        if crop_geometry.effective_size is None:
+            continue
+        gain = min(
+            crop_geometry.effective_size[0] / max(1, (x1 - x0) * geometry.effective_size[0] / 1000),
+            crop_geometry.effective_size[1] / max(1, (y1 - y0) * geometry.effective_size[1] / 1000),
+        )
+        if min(heights) < 10 and gain >= 2:
+            block.metadata["resolution_risk"] = {
+                "minimum_symbol_pixels": min(heights),
+                "expected_gain": gain,
+            }
+            diagnostics.append(
+                {
+                    "page_idx": index,
+                    "stage": "resolution_risk",
+                    "bbox": block.bbox,
+                    "minimum_symbol_pixels": min(heights),
+                    "expected_gain": gain,
+                }
+            )
+
+
+def _nonempty_markdown(raw: str) -> str:
+    if not raw.strip() or raw.strip() in {"[]", "{}", "null"}:
+        raise ValueError("Empty Markdown")
+    return raw.strip()
+
+
+def _materialize_markdown_images(
+    text: str,
+    index: int,
+    pdf: Path | None,
+    image: Path,
+    workdir: Path,
+    settings: Settings,
+    assets: dict[str, Path],
+) -> str:
+    def materialize(match: re.Match[str]) -> str:
+        box = [float(match.group(i)) for i in range(1, 5)]
+        name = f"images/page_{index}_fallback_graphic_{len(assets)}.png"
+        try:
+            source = _formula_crop(
+                pdf, index, box, image, workdir, 40000 + len(assets), settings, graphics=True
+            )
+            target = workdir / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            assets[name] = target
+        except (ValueError, OSError):
+            return f"[Unclear graphic; p{index + 1}; zoom if possible.]"
+        return f"![image]({name})"
+
+    text = re.sub(
+        r'<img\b[^>]*src=["\']images/bbox_(\d+)_(\d+)_(\d+)_(\d+)\.jpg["\'][^>]*>',
+        materialize,
+        text,
+    )
+    return _fallback_image_references(text, assets)
 
 
 def _prepare_page_images(
@@ -291,25 +405,6 @@ def _prepare_page_images(
     preview_path = workdir / f"preview-{idx}.png"
     preview.save(preview_path)
     return path, preview, preview_path
-
-
-def _uncertain_text_object(obj: Any, raw: Any) -> bool:
-    if raw.FPDFTextObj_GetTextRenderMode(obj.raw) in (3, 7):
-        return True
-    size = ctypes.c_float()
-    if not raw.FPDFTextObj_GetFontSize(obj.raw, ctypes.byref(size)) or size.value < 8:
-        return True
-    font = raw.FPDFTextObj_GetFont(obj.raw)
-    if not font:
-        return True
-    length = raw.FPDFFont_GetBaseFontName(font, None, 0)
-    if not length or length > 4096:
-        return True
-    name = ctypes.create_string_buffer(length)
-    raw.FPDFFont_GetBaseFontName(font, name, length)
-    return bool(
-        re.search(r"math|symbol|cmmi|cmsy|cmex|stmary|mt.?extra", name.value.decode("latin1"), re.I)
-    )
 
 
 def _json(raw: str) -> Any:
@@ -339,22 +434,26 @@ def _clean_markdown(text: str) -> str:
     return text
 
 
-def _fallback_image_references(text: str) -> str:
+def _fallback_image_references(text: str, known: Collection[str] = ()) -> str:
     """Do not publish model-suggested local image paths that were not materialized."""
 
     def markdown(match: re.Match[str]) -> str:
         destination = match.group(1) or match.group(2)
-        if re.match(r"^(?:https?:|data:|#)", destination, re.I):
+        if destination in known or re.match(r"^(?:https?:|data:|#)", destination, re.I):
             return match.group(0)
-        return "[Image reference unavailable; see retained page image]"
+        return "[Unclear graphic; recheck source page; zoom if possible.]"
 
     text = re.sub(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))[^)]*\)", markdown, text)
 
     def html_image(match: re.Match[str]) -> str:
         tag = match.group(0)
         src = re.search(r"\bsrc\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
-        if src and not re.match(r"^(?:https?:|data:|#)", src.group(1), re.I):
-            return "[Image reference unavailable; see retained page image]"
+        if (
+            src
+            and src.group(1) not in known
+            and not re.match(r"^(?:https?:|data:|#)", src.group(1), re.I)
+        ):
+            return "[Unclear graphic; recheck source page; zoom if possible.]"
         return tag
 
     return re.sub(r"<img\b[^>]*>", html_image, text, flags=re.I)
@@ -496,21 +595,6 @@ def _ink_outside(preview: Image.Image, items: list[Payload]) -> tuple[int, int]:
     return total, outside
 
 
-def _risky_formula(content: str, box: Sequence[float], image_size: tuple[int, int]) -> bool:
-    """Select small or visibly malformed formulas for a separate recognition pass."""
-    text = content.strip()
-    width, height = image_size
-    small = (box[3] - box[1]) * height / 1000 < 24 or (box[2] - box[0]) * width / 1000 < 24
-    malformed = (
-        not text
-        or "\ufffd" in text
-        or text.count("{") != text.count("}")
-        or text.count("$") % 2 != 0
-        or bool(re.search(r"(?:\?\?|�)", text))
-    )
-    return small or malformed
-
-
 def _figure_kind(item: Payload) -> str:
     kind = item.get("figure_kind", item.get("asset_type", "unknown"))
     if kind in {"photo", "drawing", "text", "icon", "mixed"}:
@@ -528,6 +612,36 @@ def _figure_kind(item: Payload) -> str:
         if re.search(pattern, description):
             return value
     return "unknown"
+
+
+def _semantic_regions(items: list[Payload], image: Path) -> bool:
+    """Accept complete symbolic/table content only when no visual content was left out."""
+    if not items or any(item.get("_incomplete") or item["category"] in IMAGES for item in items):
+        return False
+    if not any(
+        item["category"] in {"table", "display_formula", "inline_formula"} for item in items
+    ):
+        return False
+    if any(re.search(r"<img\b|<mermaid>|<caption>", item["content"], re.I) for item in items):
+        return False
+    with Image.open(image) as source:
+        total, outside = _ink_outside(source, items)
+    return not total or outside / total <= 0.10
+
+
+def _table_signature(value: str) -> tuple[str, ...]:
+    """Keep ordered cells, headers, spans and annotations; ignore visual styling."""
+    tokens: list[str] = []
+    for match in re.finditer(
+        r"<(/?)(table|thead|tbody|tfoot|tr|td|th|caption)\b([^>]*)>|([^<]+)", value, re.I
+    ):
+        closing, tag, attrs, text = match.groups()
+        if tag:
+            spans = sorted(re.findall(r"\b(rowspan|colspan)\s*=\s*[\"']?(\d+)", attrs, re.I))
+            tokens.append("<" + closing + tag.lower() + repr(spans) + ">")
+        elif text and text.strip():
+            tokens.append(re.sub(r"\s+", " ", html.unescape(text)).strip())
+    return tuple(tokens)
 
 
 class Pipeline:
@@ -549,115 +663,101 @@ class Pipeline:
         stage: str,
         recovery: Callable[[], Path] | None = None,
     ) -> T:
+        schema = None
+        if validator is _assessment:
+            schema = layout_schema()
+        elif (
+            prompt == (PROMPTS / "document_structured.txt").read_text()
+            or prompt == (PROMPTS / "figure_captioning.txt").read_text()
+            or validator is _structured
+        ) or stage in {
+            "structured",
+            "native_visual_transcription",
+            "table_page_recovery",
+            "graphic_structure",
+            "inline_recovery",
+        }:
+            schema = structured_schema()
+        seen: set[tuple[str, ...]] = set()
         errors = []
-        for attempt in range(3):
-            selected_images = (
-                [await asyncio.to_thread(recovery)]
-                if attempt == 2 and recovery is not None
-                else images
-            )
-            raw = ""
+        for attempt in range(2 if recovery is not None else 1):
+            if attempt == 0:
+                selected = images
+            else:
+                assert recovery is not None
+                selected = [await asyncio.to_thread(recovery)]
+            fingerprint = tuple(hashlib.sha256(path.read_bytes()).hexdigest() for path in selected)
+            if fingerprint in seen:
+                diagnostics.append(
+                    {
+                        "page_idx": page_idx,
+                        "stage": stage,
+                        "status": "skipped",
+                        "reason": "identical recovery input",
+                    }
+                )
+                break
+            seen.add(fingerprint)
             started = time.monotonic()
             self._call_count += 1
-            call_number = self._call_count
+            raw = ""
+            entry: Diagnostic = {
+                "page_idx": page_idx,
+                "stage": stage,
+                "purpose": stage,
+                "call_number": self._call_count,
+                "attempt": attempt + 1,
+            }
             try:
-                raw = await self.runtime.infer(
-                    selected_images,
-                    prompt,
-                    max_tokens=min(self.settings.runtime.max_tokens, 16384),
-                )
+                if schema is not None:
+                    raw = await self.runtime.infer(
+                        selected,
+                        prompt,
+                        max_tokens=min(self.settings.runtime.max_tokens, 16384),
+                        response_schema=schema,
+                    )
+                else:
+                    raw = await self.runtime.infer(
+                        selected, prompt, max_tokens=min(self.settings.runtime.max_tokens, 16384)
+                    )
                 candidate = (
                     _clean_markdown(raw)
                     if stage in {"advanced_markdown", "markdown_fallback"}
                     else raw
                 )
-                result = validator(candidate)
-                if getattr(raw, "finish_reason", None) == "length":
-                    diagnostics.append(
-                        {
-                            "page_idx": page_idx,
-                            "stage": stage,
-                            "status": "incomplete",
-                            "warning": "Model stopped at token limit; output may be incomplete",
-                        }
-                    )
-                diagnostics.append(
-                    {
-                        "page_idx": page_idx,
-                        "stage": stage,
-                        "purpose": stage,
-                        "call_number": call_number,
-                        "duration_seconds": time.monotonic() - started,
-                        "attempt": attempt + 1,
-                        "raw": getattr(raw, "raw_text", raw),
-                        "finish_reason": getattr(raw, "finish_reason", None),
-                        "usage": getattr(raw, "usage", None),
-                        **(
-                            {"cleaned": candidate, "cleanup_applied": candidate != raw}
-                            if stage in {"advanced_markdown", "markdown_fallback"}
-                            else {}
-                        ),
-                    }
+                entry.update(
+                    raw=getattr(raw, "raw_text", raw),
+                    finish_reason=getattr(raw, "finish_reason", None),
+                    usage=getattr(raw, "usage", None),
                 )
-                return result
+                if candidate != raw:
+                    entry.update(cleaned=candidate, cleanup_applied=True)
+                if getattr(raw, "image_geometry", None) is not None:
+                    entry["image_geometry"] = [
+                        asdict(geometry) for geometry in getattr(raw, "image_geometry")
+                    ]
+                if getattr(raw, "finish_reason", None) == "length":
+                    entry.update(status="incomplete", warning="Model stopped at token limit")
+                    if stage not in {
+                        "structured",
+                        "table_page_recovery",
+                        "native_visual_transcription",
+                    }:
+                        raise ValueError("Incomplete inference response")
+                return validator(candidate)
             except (ValueError, TypeError, KeyError) as exc:
                 errors.append(str(exc))
-                diagnostics.append(
-                    {
-                        "page_idx": page_idx,
-                        "stage": stage,
-                        "purpose": stage,
-                        "call_number": call_number,
-                        "duration_seconds": time.monotonic() - started,
-                        "attempt": attempt + 1,
-                        "raw": getattr(raw, "raw_text", raw),
-                        "finish_reason": getattr(raw, "finish_reason", None),
-                        "usage": getattr(raw, "usage", None),
-                        "error": str(exc),
-                    }
-                )
-            except (TimeoutError, asyncio.CancelledError) as exc:
-                diagnostics.append(
-                    {
-                        "page_idx": page_idx,
-                        "stage": stage,
-                        "purpose": stage,
-                        "call_number": call_number,
-                        "duration_seconds": time.monotonic() - started,
-                        "attempt": attempt + 1,
-                        "error": str(exc) or "inference timed out",
-                    }
-                )
+                entry["error"] = str(exc)
+            except BaseException as exc:
+                entry["error"] = str(exc) or type(exc).__name__
                 raise
-            except RuntimeError as exc:
-                diagnostics.append(
-                    {
-                        "page_idx": page_idx,
-                        "stage": stage,
-                        "purpose": stage,
-                        "call_number": call_number,
-                        "duration_seconds": time.monotonic() - started,
-                        "attempt": attempt + 1,
-                        "error": str(exc),
-                    }
-                )
-                raise
-            except Exception as exc:
-                diagnostics.append(
-                    {
-                        "page_idx": page_idx,
-                        "stage": stage,
-                        "purpose": stage,
-                        "call_number": call_number,
-                        "duration_seconds": time.monotonic() - started,
-                        "attempt": attempt + 1,
-                        "error": str(exc) or type(exc).__name__,
-                    }
-                )
-                raise
-        raise ValueError(
-            f"Page {page_idx + 1}: {stage} failed validation after retries: {'; '.join(errors)}"
-        )
+            finally:
+                entry.setdefault("raw", getattr(raw, "raw_text", raw))
+                entry.setdefault("finish_reason", getattr(raw, "finish_reason", None))
+                entry.setdefault("usage", getattr(raw, "usage", None))
+                entry["duration_seconds"] = time.monotonic() - started
+                diagnostics.append(entry)
+        raise ValueError(f"Page {page_idx + 1}: {stage} failed validation: {'; '.join(errors)}")
 
     async def parse(
         self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
@@ -718,7 +818,7 @@ class Pipeline:
                         return target
 
                 image_size = image.size
-                blank_image = cast(tuple[int, int], image.convert("L").getextrema())[0] >= 250
+                blank_image = cast(tuple[int, int], image.convert("L").getextrema()) == (255, 255)
                 path, preview, preview_path = await asyncio.to_thread(
                     _prepare_page_images, image, workdir, idx, self.settings.preview_side
                 )
@@ -750,32 +850,36 @@ class Pipeline:
             async def verify_one(page: Page) -> None:
                 if not page.blocks:
                     return
-                recovery = None
-                if suffix == ".pdf":
-                    recovery = partial(
-                        _pdf_snapshot, input_path, page.page_idx, self.settings, workdir, True
+                recovery = (
+                    partial(_pdf_snapshot, input_path, page.page_idx, self.settings, workdir, True)
+                    if suffix == ".pdf"
+                    else None
+                )
+
+                def crop_region(
+                    *, box: Sequence[float], ordinal: int, view: int = 0
+                ) -> Path | None:
+                    return _recovery_crop(
+                        input_path if suffix == ".pdf" else None,
+                        page.page_idx,
+                        box,
+                        workdir / f"source-{page.page_idx}.png" if suffix != ".pdf" else None,
+                        workdir,
+                        ordinal,
+                        self.settings,
+                        [b.bbox for b in page.blocks if b.bbox],
+                        view,
                     )
+
                 if tier == "advanced":
-                    crop_pdf = (
-                        partial(
-                            _formula_crop,
-                            input_path,
-                            page.page_idx,
-                            image=None,
-                            workdir=workdir,
-                            settings=self.settings,
-                        )
-                        if suffix == ".pdf"
-                        else None
-                    )
                     await verify_page(
                         self,
                         page,
                         workdir / f"page-{page.page_idx}.png",
                         diagnostics,
                         recovery,
-                        crop_pdf=crop_pdf,
-                        region_imagepath=(workdir / f"source-{page.page_idx}.png")
+                        crop_pdf=crop_region,
+                        region_imagepath=workdir / f"source-{page.page_idx}.png"
                         if suffix != ".pdf"
                         else None,
                     )
@@ -783,23 +887,9 @@ class Pipeline:
                     await verify_suspicious_regions(
                         self,
                         page,
-                        workdir
-                        / (
-                            f"page-{page.page_idx}.png"
-                            if suffix == ".pdf"
-                            else f"source-{page.page_idx}.png"
-                        ),
+                        workdir / f"page-{page.page_idx}.png",
                         diagnostics,
-                        partial(
-                            _formula_crop,
-                            input_path if suffix == ".pdf" else None,
-                            page.page_idx,
-                            image=None,
-                            workdir=workdir,
-                            settings=self.settings,
-                        )
-                        if suffix == ".pdf"
-                        else None,
+                        crop_pdf=crop_region,
                     )
 
             await _gather_cancel(verify_one(page) for page in pages)
@@ -814,13 +904,23 @@ class Pipeline:
 
             class DiagnosticRuntime:
                 async def infer(
-                    self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+                    self,
+                    images: list[Path],
+                    prompt: str,
+                    *,
+                    max_tokens: int | None = None,
+                    response_schema: Payload | None = None,
                 ) -> str:
                     started = time.monotonic()
                     pipeline._call_count += 1
                     number = pipeline._call_count
                     try:
-                        return await pipeline.runtime.infer(images, prompt, max_tokens=max_tokens)
+                        return await pipeline.runtime.infer(
+                            images,
+                            prompt,
+                            max_tokens=max_tokens,
+                            response_schema=response_schema or cross_page_schema(),
+                        )
                     finally:
                         diagnostics.append(
                             {
@@ -834,6 +934,19 @@ class Pipeline:
             async def recover_page(page_index: int) -> Page | None:
                 page = copy.deepcopy(result.pages[page_index])
                 layouts = page.metadata.get("assessment", {}).get("layout", [])
+                if not any(item.get("category") == "table" for item in layouts):
+                    try:
+                        recovered_layout = await self._infer_valid(
+                            [workdir / f"page-{page_index}.png"],
+                            (PROMPTS / "document_layout.txt").read_text(),
+                            _assessment,
+                            diagnostics,
+                            page_index,
+                            "table_layout_recovery",
+                        )
+                        layouts = recovered_layout["layout"]
+                    except ValueError:
+                        pass
                 candidates = [
                     item["bbox"]
                     for item in layouts
@@ -855,6 +968,7 @@ class Pipeline:
                         workdir,
                         30000,
                         self.settings,
+                        graphics=True,
                     )
                 elif suffix == ".pdf":
                     imagepath = cast(
@@ -882,12 +996,7 @@ class Pipeline:
                 item = tables[0]
                 box = item["bbox"]
                 if crop_box:
-                    x0, y0, x1, y1 = (
-                        max(0, crop_box[0] - 10),
-                        max(0, crop_box[1] - 10),
-                        min(1000, crop_box[2] + 10),
-                        min(1000, crop_box[3] + 10),
-                    )
+                    x0, y0, x1, y1 = (*crop_box,)
                     box = [
                         x0 + box[0] * (x1 - x0) / 1000,
                         y0 + box[1] * (y1 - y0) / 1000,
@@ -924,6 +1033,8 @@ class Pipeline:
                 max_tokens=self.settings.runtime.max_tokens,
                 recover_page=recover_page,
             )
+        for temporary in workdir.glob("formula-*.png"):
+            temporary.unlink(missing_ok=True)
         return result
 
     async def _page(
@@ -943,29 +1054,8 @@ class Pipeline:
         small_regions: Sequence[Sequence[float]] = (),
     ) -> Page:
         path, preview_path, image_size, blank_image = image
-        try:
-            assessment = await self._infer_valid(
-                [preview_path],
-                (PROMPTS / "document_layout.txt").read_text(),
-                _assessment,
-                diagnostics,
-                idx,
-                "assessment",
-            )
-        except ValueError:
-            assessment = {
-                "blank": False,
-                "complex": True,
-                "math": True,
-                "tables": True,
-                "figures": True,
-                "effort": "visual",
-            }
-            diagnostics.append({"page_idx": idx, "stage": "assessment", "status": "unresolved"})
-        if assessment["blank"] and not native.strip() and blank_image:
-            return Page(
-                page_idx=idx, blocks=[], metadata={"route": "blank", "assessment": assessment}
-            )
+        if blank_image and not native.strip():
+            return Page(idx, [], metadata={"route": "blank"})
 
         def nonempty(raw: str) -> list[Payload]:
             items = _structured(raw)
@@ -992,201 +1082,91 @@ class Pipeline:
                 recovery,
             )
         except ValueError:
-
-            def markdown(raw: str) -> str:
-                if not raw.strip():
-                    raise ValueError("Empty Markdown")
-                return raw.strip()
-
+            # Layout is a recovery hint only; ordinary pages already return geometry.
+            try:
+                assessment = await self._infer_valid(
+                    [path],
+                    (PROMPTS / "document_layout.txt").read_text(),
+                    _assessment,
+                    diagnostics,
+                    idx,
+                    "assessment_recovery",
+                )
+            except ValueError:
+                assessment = {"layout": []}
             try:
                 text = await self._infer_valid(
                     [path],
                     (PROMPTS / "document_markdown.txt").read_text(),
-                    markdown,
+                    _nonempty_markdown,
                     diagnostics,
                     idx,
                     "markdown_fallback",
-                    recovery,
                 )
             except ValueError:
-                text = "No reliable transcription available; page image retained."
-
-            text = _fallback_image_references(text)
-            if any(
-                d.get("page_idx") == idx
-                and d.get("stage") == "markdown_fallback"
-                and d.get("cleanup_applied")
-                for d in diagnostics
-            ):
-                text = (
-                    "[Repeated-tail cleanup applied; original response retained in diagnostics]\n\n"
-                    + text
-                )
-            name = f"images/page_{idx}_fallback.png"
-            target = workdir / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(shutil.copyfile, path, target)
-            assets[name] = target
+                text = f"[Unclear content; p{idx + 1}; zoom if possible.]"
+            text = await asyncio.to_thread(
+                _materialize_markdown_images,
+                text,
+                idx,
+                pdf_path,
+                original_image or path,
+                workdir,
+                self.settings,
+                assets,
+            )
             diagnostics.append(
                 {
                     "page_idx": idx,
                     "stage": "structured",
                     "status": "incomplete",
-                    "warning": "Structured extraction failed; Markdown and page image retained",
+                    "reason": "structured extraction unavailable; fallback retained",
                 }
             )
             return Page(
                 idx,
-                [
-                    Block("image", "", image_source=name),
-                    Block(
-                        "text", "[Uncertain extraction: structured output unavailable]\n\n" + text
-                    ),
-                ],
+                [Block("text", text)],
                 metadata={"route": "markdown_fallback", "assessment": assessment},
             )
-        if pdf_path and small_regions:
-            from .verification import verify_small_text_regions
 
-            await verify_small_text_regions(
-                self,
-                idx,
-                input_items=items,
-                regions=small_regions,
-                pdf_path=pdf_path,
-                image=None,
-                workdir=workdir,
-                diagnostics=diagnostics,
-            )
-        native_regions = {}
-        if (
-            pdf_path
-            and compare_native
-            and ocr_mode.lower() not in {"forceocr", "force_ocr", "force-ocr", "ocr"}
-        ):
-            native_regions = await asyncio.to_thread(_native_regions, pdf_path, idx, items)
-        blocks = []
-        if any(item.get("_incomplete") for item in items):
-            name = f"images/page_{idx}_incomplete.png"
-            target = workdir / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(shutil.copyfile, path, target)
-            assets[name] = target
-            blocks.extend(
-                [
-                    Block(
-                        "text",
-                        "[Incomplete extraction: only complete records were recovered; see page image]",
-                    ),
-                    Block("image", "", image_source=name),
-                ]
-            )
-
-        async def recognize_formula(n: int, item: Payload) -> tuple[str | None, Path] | None:
-            content, box = item["content"], item["bbox"]
-            if item["category"] not in {"display_formula", "inline_formula"} or not (
-                self.tier == "advanced" or _risky_formula(content, box, image_size)
-            ):
-                return None
-            crop_path = await asyncio.to_thread(
-                _formula_crop, pdf_path, idx, box, original_image or path, workdir, n, self.settings
-            )
-
-            def formula(raw: str) -> str:
-                if not raw.strip() or raw.lstrip().startswith("```"):
-                    raise ValueError("invalid formula recognition")
-                return raw.strip()
-
-            try:
-                content = await self._infer_valid(
-                    [crop_path],
-                    (PROMPTS / "formula_recognition.txt").read_text(),
-                    formula,
-                    diagnostics,
-                    idx,
-                    "formula",
-                )
-                return content, crop_path
-            except ValueError:
-                return None, crop_path
-
-        formula_results = await _gather_cancel(
-            recognize_formula(n, item) for n, item in enumerate(items)
+        assessment = _assessment(
+            json.dumps([{"bbox": item["bbox"], "category": item["category"]} for item in items])
         )
+        geometry = _image_geometry(image_size, self.settings)
+        diagnostics.append(
+            {
+                "page_idx": idx,
+                "stage": "page_geometry",
+                "submitted_size": image_size,
+                "effective_size": geometry.effective_size,
+            }
+        )
+        blocks: list[Block] = []
         for n, item in enumerate(items):
             category, content, box = item["category"], item["content"], item["bbox"]
-            if item.get("_uncertain_alternative"):
-                blocks.append(
-                    Block(
-                        "text",
-                        "[Uncertain alternative transcription] " + item["_uncertain_alternative"],
-                    )
-                )
-            if item.get("_rejected_records"):
-                diagnostics.append(
-                    {
-                        "page_idx": idx,
-                        "stage": "structured",
-                        "status": "incomplete",
-                        "rejected_records": item["_rejected_records"],
-                    }
-                )
-            if item.get("_incomplete"):
-                diagnostics.append(
-                    {
-                        "page_idx": idx,
-                        "stage": "structured",
-                        "status": "incomplete",
-                        "warning": "Only complete records recovered",
-                    }
-                )
-            if item.get("_uncertain"):
-                content = "[Uncertain text] " + content
-                name = f"images/page_{idx}_small_text_{n}.png"
-                target = workdir / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(Path(item["_uncertain_crop"]).read_bytes())
-                assets[name] = target
-                blocks.append(
-                    Block(
-                        "image",
-                        "",
-                        image_source=name,
-                        metadata={"warning": "Small-text verification disagrees"},
-                    )
-                )
-            formula_result = formula_results[n]
-            if formula_result is not None:
-                recognized, crop_path = formula_result
-                if recognized is not None:
-                    content = recognized
-                else:
-                    name = f"images/page_{idx}_formula_{n}.png"
-                    target = workdir / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(crop_path.read_bytes())
-                    assets[name] = target
-                    blocks.append(
-                        Block("text", "[Uncertain formula: independent recognition unavailable]")
-                    )
-                    blocks.append(
-                        Block(
-                            "image",
-                            "",
-                            image_source=name,
-                            metadata={"warning": "Formula recognition failed"},
-                        )
-                    )
-                    diagnostics.append(
-                        {"page_idx": idx, "stage": "formula", "status": "unresolved"}
-                    )
             bbox = cast(tuple[float, float, float, float], tuple(float(x) / 1000 for x in box))
-            source = None
+            metadata: Payload = {"source": "visual", "category": category}
+            if item.get("_incomplete"):
+                metadata["incomplete"] = True
+                diagnostics.append(
+                    {
+                        "page_idx": idx,
+                        "stage": "structured",
+                        "status": "incomplete",
+                        "region": n,
+                        "rejected_records": item.get("_rejected_records", []),
+                    }
+                )
+            if item.get("_original_bbox"):
+                metadata.update(
+                    original_bbox=item["_original_bbox"], bbox_deviation=item.get("_bbox_deviation")
+                )
             kind = {
                 "display_formula": "equation",
                 "doc_title": "title",
                 "paragraph_title": "title",
             }.get(category, category)
+            source = None
             if category in IMAGES:
                 name = f"images/page_{idx}_block_{n}.png"
                 target = workdir / name
@@ -1200,82 +1180,34 @@ class Pipeline:
                     workdir,
                     n,
                     self.settings,
+                    graphics=True,
                 )
                 target.write_bytes(crop_path.read_bytes())
                 assets[name] = target
                 source, kind, content = name, "image", ""
-            provenance = "visual"
-            candidate = native_regions.get(n, "")
-
-            native_numbers = set(re.findall(r"[+−-]?\d+(?:[.,]\d+)*", candidate))
-            visual_numbers = set(re.findall(r"[+−-]?\d+(?:[.,]\d+)*", content))
-            if (
-                candidate
-                and native_numbers - visual_numbers
-                and category in {"text", "abstract", "content", "reference_content"}
-            ):
-                crop_path = await asyncio.to_thread(
-                    _formula_crop,
-                    pdf_path,
-                    idx,
-                    box,
-                    original_image or path,
-                    workdir,
-                    20000 + n,
-                    self.settings,
+                metadata.update(
+                    asset_type=_figure_kind(item),
+                    source_page=idx,
+                    source_bbox=bbox,
+                    source_pdf=bool(pdf_path),
                 )
-                name = f"images/page_{idx}_native_disagreement_{n}.png"
-                target = workdir / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.copyfile, crop_path, target)
-                assets[name] = target
-                blocks.extend(
-                    [
-                        Block(
-                            "text",
-                            "[Uncertain text: native and visual evidence disagree; see region image]",
-                        ),
-                        Block("image", "", image_source=name),
-                    ]
-                )
-                diagnostics.append(
-                    {
-                        "page_idx": idx,
-                        "stage": "native_region_comparison",
-                        "status": "unresolved",
-                        "region": n,
-                        "native": candidate,
-                        "visual": content,
-                    }
-                )
+            blocks.append(Block(kind, content, bbox=bbox, image_source=source, metadata=metadata))
+        await asyncio.to_thread(
+            _flag_resolution_risks,
+            blocks,
+            image_size,
+            geometry,
+            pdf_path,
+            idx,
+            self.settings,
+            diagnostics,
+        )
+        if any(item.get("_incomplete") for item in items):
             blocks.append(
                 Block(
-                    type=kind,
-                    content=content,
-                    bbox=bbox,
-                    image_source=source,
-                    metadata={
-                        "source": provenance,
-                        "category": category,
-                        **(
-                            {
-                                "original_bbox": item["_original_bbox"],
-                                "bbox_deviation": item.get("_bbox_deviation"),
-                            }
-                            if "_original_bbox" in item
-                            else {}
-                        ),
-                        **(
-                            {
-                                "asset_type": _figure_kind(item),
-                                "source_page": idx,
-                                "source_bbox": bbox,
-                                "source_pdf": bool(pdf_path),
-                            }
-                            if source
-                            else {}
-                        ),
-                    },
+                    "text",
+                    f"[Unclear content; p{idx + 1}; zoom if possible.]",
+                    metadata={"incomplete": True},
                 )
             )
         attached = set()
@@ -1311,6 +1243,67 @@ class Pipeline:
                     }
                 )
                 captions = []
+            for block in blocks:
+                if not block.image_source or block.bbox is None:
+                    continue
+                x0, y0, x1, y1 = block.bbox
+                proposed = []
+                for candidate in captions:
+                    if candidate["category"] != "table":
+                        continue
+                    a, b, c, d = [v / 1000 for v in candidate["bbox"]]
+                    overlap = max(0, min(x1, c) - max(x0, a)) * max(0, min(y1, d) - max(y0, b))
+                    union = (x1 - x0) * (y1 - y0) + (c - a) * (d - b) - overlap
+                    if union and overlap / union > 0.5:
+                        proposed.append(candidate)
+                if len(proposed) != 1:
+                    continue
+                image_path = assets[block.image_source]
+                try:
+                    regions = await self._infer_valid(
+                        [image_path],
+                        (PROMPTS / "document_structured.txt").read_text(),
+                        _structured,
+                        diagnostics,
+                        idx,
+                        "graphic_structure",
+                    )
+                except ValueError:
+                    continue
+                tables = [item for item in regions if item["category"] == "table"]
+                if (
+                    len(tables) != 1
+                    or len(regions) != 1
+                    or not await asyncio.to_thread(_semantic_regions, regions, image_path)
+                ):
+                    continue
+                if _table_signature(tables[0]["content"]) != _table_signature(
+                    proposed[0]["content"]
+                ):
+                    diagnostics.append(
+                        {
+                            "page_idx": idx,
+                            "stage": "graphic_structure",
+                            "status": "unresolved",
+                            "reason": "table structure differs; source graphic retained",
+                        }
+                    )
+                    continue
+                old = block.image_source
+                block.type = "table"
+                block.content = tables[0]["content"]
+                block.image_source = None
+                block.metadata.update(category="table", representation="verified_table")
+                diagnostics.append(
+                    {
+                        "page_idx": idx,
+                        "stage": "graphic_structure",
+                        "status": "converted",
+                        "bbox": block.bbox,
+                    }
+                )
+                if not any(b.image_source == old for b in blocks):
+                    assets.pop(old, None)
             for block in (
                 b for b in blocks if b.image_source and b.metadata.get("category") in IMAGES
             ):

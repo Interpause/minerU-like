@@ -16,6 +16,7 @@ from PIL import Image
 
 from .contracts import Inference
 from .result import Block, DocumentResult, Page
+from .schemas import cross_page_schema
 
 PROMPT = Path(__file__).parent / "prompts" / "crosspage_table.txt"
 
@@ -281,6 +282,7 @@ async def reconstruct_tables(
                 [workdir / f"page-{idx}.png", right_image or workdir / f"page-{idx + 1}.png"],
                 prompt,
                 max_tokens=max_tokens,
+                response_schema=cross_page_schema(),
             )
             diagnostic["raw"] = str(raw)
             if getattr(raw, "finish_reason", None) is not None:

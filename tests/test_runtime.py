@@ -54,6 +54,10 @@ async def test_vision_request_and_incomplete_response(tmp_path: Path) -> None:
     assert result.usage == {}
     payload = json.loads(requests[-1].content)
     assert payload["model"] == "vision"
+    assert payload["temperature"] == 0
+    assert payload["repeat_penalty"] == 1.0
+    assert payload["presence_penalty"] == payload["frequency_penalty"] == 0.0
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert [part["type"] for part in payload["messages"][0]["content"]] == [
         "image_url",
         "image_url",

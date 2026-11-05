@@ -31,8 +31,6 @@ async def test_delivery_does_not_add_model_calls(tmp_path: Path) -> None:
             response_schema: Payload | None = None,
         ) -> str:
             self.calls.append((Path(images[0]), Path(images[0]).read_bytes()))
-            if len(self.calls) == 1:
-                return json.dumps([{"category": "image", "bbox": [0, 0, 1000, 1000]}])
             return json.dumps(
                 [
                     {
@@ -48,9 +46,9 @@ async def test_delivery_does_not_add_model_calls(tmp_path: Path) -> None:
     settings = Settings(captioning=False, data_dir=tmp_path / "data")
     processor = DocumentProcessor(settings, runtime)
     result = await processor.parse(source, source.name, "auto", "standard", tmp_path / "work")
-    assert len(runtime.calls) == 2
+    assert len(runtime.calls) == 1
     assert result.pages[0].blocks[0].metadata["asset_type"] == "drawing"
-    assert result.diagnostics[-1]["model_calls"] == 2
+    assert result.diagnostics[-1]["model_calls"] == 1
     assert all(path.read_bytes() == before for path, before in runtime.calls)
     result.write_zip(tmp_path / "result.zip")
 
