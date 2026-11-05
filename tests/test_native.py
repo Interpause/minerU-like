@@ -6,7 +6,7 @@ from docx import Document
 from PIL import Image
 
 from mineru_like.config import Settings
-from mineru_like.contracts import Inference
+from mineru_like.contracts import Inference, Payload
 from mineru_like.native import _inference_image
 from mineru_like.pipeline import Pipeline
 
@@ -73,7 +73,12 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             with Image.open(images[0]) as image:
                 assert image.format == "PNG"
@@ -133,7 +138,12 @@ async def test_native_embedded_raster_formula_is_supplemental(tmp_path: Path) ->
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             return '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"}]'
 

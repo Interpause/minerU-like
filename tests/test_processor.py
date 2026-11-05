@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw
 
 from mineru_like.compression import optimize_assets
 from mineru_like.config import Settings
+from mineru_like.contracts import Payload
 from mineru_like.processor import DocumentProcessor, finalize_asset_names
 from mineru_like.result import Block, DocumentResult, Page
 
@@ -22,7 +23,12 @@ async def test_delivery_does_not_add_model_calls(tmp_path: Path) -> None:
             self.calls = []
 
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             self.calls.append((Path(images[0]), Path(images[0]).read_bytes()))
             if len(self.calls) == 1:

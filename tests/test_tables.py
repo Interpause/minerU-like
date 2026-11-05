@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 from PIL import Image
 
-from mineru_like.contracts import Inference
+from mineru_like.contracts import Inference, Payload
 from mineru_like.result import Block, DocumentResult, Page
 from mineru_like.tables import reconstruct_tables
 
@@ -28,7 +28,12 @@ async def test_three_page_reconstruction_renders_intermediate(tmp_path: Path) ->
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             calls.append((images, prompt))
             content = table("1", "2") if len(calls) == 1 else table("0", "1", "2")
@@ -56,7 +61,12 @@ async def test_reconstruction_refuses_lost_cells(tmp_path: Path) -> None:
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("0")}])
 
@@ -87,7 +97,12 @@ async def test_reconstruction_rejects_invented_cells(tmp_path: Path) -> None:
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("0", "1", "invented")}])
 
@@ -110,7 +125,12 @@ async def test_candidate_on_one_side_and_explicit_negative(tmp_path: Path, hint:
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             assert "following" in prompt
             return json.dumps(
@@ -146,7 +166,12 @@ async def test_recovery_and_truncated_fragment(tmp_path: Path) -> None:
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             from mineru_like.runtime import InferenceResponse
 
@@ -177,7 +202,12 @@ async def test_three_page_merge_preserves_non_table_content(tmp_path: Path) -> N
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             cells = ("1", "2") if images[0].name == "page-1.png" else ("0", "1", "2")
             if cells[0] == "0":
@@ -202,7 +232,12 @@ async def test_runtime_failure_propagates(tmp_path: Path) -> None:
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             raise InferenceError("server unavailable")
 
@@ -231,7 +266,12 @@ async def test_recovery_does_not_modify_page_when_merge_not_accepted(
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             return response
 
@@ -257,7 +297,12 @@ async def test_reconstruction_accepts_deduplicated_repeated_first_row(tmp_path: 
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("Header", "a", "b")}])
 
@@ -279,7 +324,12 @@ async def test_empty_fragment_triggers_targeted_recovery(tmp_path: Path) -> None
 
     class Runtime:
         async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
         ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("a", "b")}])
 
