@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-import httpx
+import httpx2 as httpx
 
 CWEBP_VERSION = "1.6.0"
 CWEBP_DIRECTORY = "libwebp-1.6.0-linux-x86-64"

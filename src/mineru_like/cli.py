@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
+import httpx2 as httpx
 
 from .assets import download_asset, installed_cwebp, provision_cwebp, register_assets, verify_assets
 from .config import load_settings
@@ -136,7 +136,7 @@ def main():
                 cmd.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
     try:
         if args.command == "download-asset":
             download_asset(args.url, args.sha256, args.output)

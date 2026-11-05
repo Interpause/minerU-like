@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 from mineru_like.config import RuntimeSettings
