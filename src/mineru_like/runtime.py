@@ -14,18 +14,26 @@ import socket
 import tempfile
 import time
 from pathlib import Path
+from typing import BinaryIO, Self
 
 import httpx2 as httpx
 
+from .config import RuntimeSettings
+from .contracts import Payload
+
 
 class InferenceError(RuntimeError):
-    """Inference failed or produced an incomplete response."""
+    """Inference failed or returned unusable metadata; token-limit text is retained."""
 
 
 class InferenceResponse(str):
     """Text response with the original server metadata available to callers."""
 
-    def __new__(cls, raw_text: str, finish_reason: str, usage: dict):
+    raw_text: str
+    finish_reason: str
+    usage: Payload
+
+    def __new__(cls, raw_text: str, finish_reason: str, usage: Payload) -> Self:
         result = super().__new__(cls, raw_text)
         result.raw_text = raw_text
         result.finish_reason = finish_reason
@@ -34,13 +42,13 @@ class InferenceResponse(str):
 
 
 class InferenceRuntime:
-    def __init__(self, settings):
+    def __init__(self, settings: RuntimeSettings) -> None:
         self.settings = settings
         self.state = "stopped"
         self.error: str | None = None
         self.device: str | None = None
-        self._process = None
-        self._log = None
+        self._process: asyncio.subprocess.Process | None = None
+        self._log: BinaryIO | None = None
         self._client: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
         self._closing = False
@@ -105,11 +113,11 @@ class InferenceRuntime:
             sock.bind(("127.0.0.1", 0))
             return sock.getsockname()[1]
 
-    async def start(self):
+    async def start(self) -> None:
         async with self._lock:
             await self._start_locked()
 
-    async def _start_locked(self):
+    async def _start_locked(self) -> None:
         if self.state == "ready":
             if self._process is None or self._process.returncode is None:
                 return
@@ -150,7 +158,7 @@ class InferenceRuntime:
             trust_env=False,
         )
 
-    async def _check_models(self):
+    async def _check_models(self) -> None:
         assert self._client is not None
         response = await self._client.get("v1/models", timeout=2)
         response.raise_for_status()
@@ -165,7 +173,7 @@ class InferenceRuntime:
         elif self.settings.mode == "external":
             self._alias = data[0]["id"]
 
-    async def _launch(self, binary: Path, model: Path, mmproj: Path):
+    async def _launch(self, binary: Path, model: Path, mmproj: Path) -> None:
         s = self.settings
         last_error = None
         # Releasing a selected port creates a small bind race; retry failed launches.
@@ -251,7 +259,9 @@ class InferenceRuntime:
                 break
         raise InferenceError(last_error or "Inference server failed to start")
 
-    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
+    async def infer(
+        self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+    ) -> InferenceResponse:
         if not 1 <= len(images) <= 2:
             raise InferenceError("Inference requires one or two images")
         limit = self.settings.max_tokens if max_tokens is None else max_tokens
@@ -342,7 +352,7 @@ class InferenceRuntime:
                 else {},
             )
 
-    async def _cleanup(self):
+    async def _cleanup(self) -> None:
         # Shield the entire ownership cleanup, not just one wait: repeated
         # cancellation must not interrupt process termination or reaping.
         task = asyncio.create_task(self._cleanup_owned())
@@ -356,7 +366,7 @@ class InferenceRuntime:
         if cancelled:
             raise asyncio.CancelledError
 
-    async def _cleanup_owned(self):
+    async def _cleanup_owned(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -381,7 +391,7 @@ class InferenceRuntime:
             self._log.close()
             self._log = None
 
-    async def close(self):
+    async def close(self) -> None:
         self._closing = True
         async with self._lock:
             await self._cleanup()

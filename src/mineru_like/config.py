@@ -2,7 +2,7 @@
 
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Literal, overload
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -32,7 +32,7 @@ class RuntimeSettings(BaseModel):
 
     @field_validator("image_max_tokens")
     @classmethod
-    def valid_image_max_tokens(cls, value):
+    def valid_image_max_tokens(cls, value: int | None) -> int | None:
         if value == 0:
             raise ValueError("image_max_tokens must be positive, -1, or omitted")
         return value
@@ -62,14 +62,14 @@ class CompressionSettings(BaseModel):
 
     @field_validator("qualities")
     @classmethod
-    def valid_qualities(cls, values):
+    def valid_qualities(cls, values: tuple[int, ...]) -> tuple[int, ...]:
         if not values or len(set(values)) != len(values) or any(not 1 <= q <= 100 for q in values):
             raise ValueError("qualities must be distinct integers between 1 and 100")
         return values
 
     @field_validator("preset_overrides")
     @classmethod
-    def valid_presets(cls, values):
+    def valid_presets(cls, values: dict[str, str]) -> dict[str, str]:
         kinds = {"photo", "drawing", "text", "icon", "mixed", "unknown"}
         presets = {"default", "photo", "picture", "drawing", "icon", "text"}
         if not set(values).issubset(kinds) or not set(values.values()).issubset(presets):
@@ -117,7 +117,13 @@ def load_settings(path: Path | None = None) -> Settings:
         with path.open("rb") as stream:
             settings = Settings.model_validate(tomllib.load(stream))
 
-    def resolve(value):
+    @overload
+    def resolve(value: Path) -> Path: ...
+
+    @overload
+    def resolve(value: None) -> None: ...
+
+    def resolve(value: Path | None) -> Path | None:
         return (base / value).resolve() if value is not None else None
 
     settings.data_dir = resolve(settings.data_dir)

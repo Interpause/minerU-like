@@ -5,11 +5,14 @@ import os
 import re
 import tempfile
 import zipfile
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
+from .contracts import Diagnostic, Payload
 
-def image_references(text: str):
+
+def image_references(text: str) -> Iterator[str]:
     """Yield local image destinations from the two delivered markup formats."""
     markdown = re.findall(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
     html = re.findall(r"<img\b[^>]*\bsrc\s*=\s*[\"\x27]([^\"\x27]+)[\"\x27]", text, re.I)
@@ -27,7 +30,7 @@ class Block:
     captions: list[str] = field(default_factory=list)
     footnotes: list[str] = field(default_factory=list)
     level: int | None = None
-    metadata: dict = field(default_factory=dict)
+    metadata: Payload = field(default_factory=dict)
 
     def markdown(self) -> str:
         parts = []
@@ -63,14 +66,14 @@ class Block:
 class Page:
     page_idx: int
     blocks: list[Block]
-    metadata: dict = field(default_factory=dict)
+    metadata: Payload = field(default_factory=dict)
 
 
 @dataclass
 class DocumentResult:
     pages: list[Page]
     assets: dict[str, Path] = field(default_factory=dict)
-    diagnostics: list[dict] = field(default_factory=list)
+    diagnostics: list[Diagnostic] = field(default_factory=list)
     markdown_override: str | None = None
 
     def validate(self) -> None:
@@ -128,7 +131,7 @@ class DocumentResult:
             for p in self.pages
         )
 
-    def structured(self) -> dict:
+    def structured(self) -> Payload:
         pages = []
         for page in self.pages:
             blocks = []
