@@ -370,3 +370,9 @@ def test_single_atom_script_braces_are_presentation_only() -> None:
         (r"x_{1}", r"x^{1}"),
     ]:
         assert canonical_math(left) != canonical_math(right)
+
+
+def test_math_control_word_boundaries_survive_whitespace_normalization() -> None:
+    assert canonical_math(r"x^{\alpha}b") == canonical_math(r"x^\alpha b")
+    assert canonical_math(r"x^{\alpha}b") != canonical_math(r"x^{\alphab}")
+    assert canonical_math(r"\alpha b") != canonical_math(r"\alphab")
