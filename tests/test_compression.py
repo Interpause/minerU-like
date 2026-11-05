@@ -1,15 +1,20 @@
+import subprocess
+import threading
+from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from PIL import Image, ImageDraw
 
 from mineru_like.compression import optimize_assets
+from mineru_like.config import Settings
 from mineru_like.result import Block, DocumentResult, Page
 
 
-def settings(**overrides):
-    values = dict(
+def settings(**overrides: object) -> Settings:
+    values: dict[str, object] = dict(
         enabled=True,
         cwebp_binary=None,
         min_savings=0.10,
@@ -21,7 +26,8 @@ def settings(**overrides):
         edge_recall=0.995,
     )
     values.update(overrides)
-    return SimpleNamespace(compression=SimpleNamespace(**values))
+    # The optimizer only consumes compression settings in these tests.
+    return cast(Settings, SimpleNamespace(compression=SimpleNamespace(**values)))
 
 
 @pytest.mark.asyncio
@@ -47,7 +53,9 @@ async def test_optimizes_and_updates_all_references(tmp_path: Path) -> None:
     output = result.assets[block.image_source]
     assert output.stat().st_size <= len(original) * 0.9
     with Image.open(output) as actual:
-        assert list(actual.convert("RGB").getdata()) == list(image.getdata())
+        assert list(cast(Iterable[object], actual.convert("RGB").getdata())) == list(
+            cast(Iterable[object], image.getdata())
+        )
     result.validate()
 
 
@@ -86,7 +94,6 @@ async def test_real_cwebp_preset_if_available(
 ) -> None:
     import os
     import shutil
-    import subprocess
 
     binary = os.environ.get("MINERU_TEST_CWEBP") or shutil.which("cwebp")
     if not binary:
@@ -100,7 +107,7 @@ async def test_real_cwebp_preset_if_available(
     calls = []
     real_popen = subprocess.Popen
 
-    def capture(command, **kwargs):
+    def capture(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
         calls.append(command)
         return real_popen(command, **kwargs)
 
@@ -239,7 +246,7 @@ async def test_color_signaled_png_trials_all_qualities_and_retains_chunks(
     Image.new("RGB", (300, 300), "white").save(source, pnginfo=info, compress_level=0)
     calls = []
 
-    def fake_encode(command, event):
+    def fake_encode(command: list[str], event: threading.Event) -> int:
         calls.append(command)
         input_path = Path(command[-3])
         output_path = Path(command[-1])

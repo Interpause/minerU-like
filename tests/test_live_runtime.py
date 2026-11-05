@@ -67,6 +67,7 @@ async def test_configured_eos_tokens_terminate(
     live_runtime: tuple[InferenceRuntime, Path, dict[str, Any]],
 ) -> None:
     runtime, _, evidence = live_runtime
+    assert runtime._client is not None
     # OvisOCR3 generation_config.json lists both tokens. Force each as the
     # next token through llama.cpp's native endpoint to test EOG recognition,
     # without changing the runtime's model-defined stop configuration.
@@ -101,6 +102,7 @@ async def test_live_slots_queued_images_and_memory(
     live_runtime: tuple[InferenceRuntime, Path, dict[str, Any]],
 ) -> None:
     runtime, folder, evidence = live_runtime
+    assert runtime._client is not None
     source = folder / "page.png"
     prompt = (Path(__file__).parents[1] / "src/mineru_like/prompts/plain_ocr.txt").read_text()
     response = await runtime._client.get("props")

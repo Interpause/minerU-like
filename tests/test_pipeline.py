@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,10 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from mineru_like.config import Settings
+from mineru_like.contracts import Diagnostic, Inference
 from mineru_like.pipeline import Pipeline, _assessment, _clean_markdown, _structured
+from mineru_like.result import DocumentResult, Page
+from mineru_like.verification import VerificationPipeline
 
 
 def test_existing_ovis_classifications_supply_encoder_hints() -> None:
@@ -23,14 +27,14 @@ def test_existing_ovis_classifications_supply_encoder_hints() -> None:
 
 
 class Runtime:
-    def __init__(self, replies):
+    def __init__(self, replies: list[str]) -> None:
         self.layouts = iter([r for r in replies if isinstance(r, str) and r.startswith("LAYOUT:")])
         self.replies = iter(
             [r for r in replies if not (isinstance(r, str) and r.startswith("LAYOUT:"))]
         )
         self.calls = []
 
-    async def infer(self, images, prompt, *, max_tokens=None):
+    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
         self.calls.append((images, prompt))
         if '"category": "string"}' in prompt:
             return next(self.layouts)[7:]
@@ -44,11 +48,11 @@ class Runtime:
 
 
 class TableRuntime:
-    def __init__(self, outputs, markdown, merges):
+    def __init__(self, outputs: list[str], markdown: list[str], merges: list[str]) -> None:
         self.outputs, self.markdown, self.merges = outputs, markdown, iter(merges)
         self.calls = []
 
-    async def infer(self, images, prompt, *, max_tokens=None):
+    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
         self.calls.append((images, prompt))
         if len(images) > 1:
             return next(self.merges)
@@ -66,7 +70,7 @@ class TableRuntime:
         return self.outputs[index]
 
 
-def assessment(**updates):
+def assessment(**updates: bool | str) -> str:
     categories = []
     if updates.get("math"):
         categories.append("display_formula")
@@ -79,7 +83,7 @@ def assessment(**updates):
     return "LAYOUT:" + json.dumps([{"bbox": [0, 0, 1000, 1000], "category": c} for c in categories])
 
 
-def structured(content="Visual text"):
+def structured(content: str = "Visual text") -> str:
     return json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "text", "content": content}])
 
 
@@ -161,10 +165,12 @@ async def test_image_pages_retry_and_assets(tmp_path: Path) -> None:
     )
 
     class PageRuntime:
-        def __init__(self):
+        def __init__(self) -> None:
             self.count = 0
 
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             if '"category": "string"}' in prompt:
                 return assessment()[7:]
             if (
@@ -213,7 +219,7 @@ async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path: Pa
     first = Image.new("RGB", (100, 100), "black")
     first.save(path, save_all=True, append_images=[first])
 
-    def table(text):
+    def table(text: str) -> str:
         return json.dumps(
             [
                 {
@@ -250,7 +256,7 @@ async def test_cross_page_table_rejects_invented_cells(tmp_path: Path) -> None:
     frame = Image.new("RGB", (40, 40), "black")
     frame.save(path, save_all=True, append_images=[frame])
 
-    def table(value):
+    def table(value: str) -> str:
         return json.dumps(
             [
                 {
@@ -324,10 +330,10 @@ async def test_advanced_pipeline_reconstructs_three_pages(tmp_path: Path) -> Non
     first = Image.new("RGB", (100, 100), "black")
     first.save(path, save_all=True, append_images=[first, first])
 
-    def html(text):
+    def html(text: str) -> str:
         return "<table>" + "".join(f"<tr><td>{v}</td></tr>" for v in text) + "</table>"
 
-    def output(text):
+    def output(text: str) -> str:
         return json.dumps(
             [{"bbox": [0, 0, 1000, 1000], "category": "table", "content": html(text)}]
         )
@@ -406,7 +412,7 @@ async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path: Path) 
     frame = Image.new("RGB", (100, 100), "black")
     frame.save(path, save_all=True, append_images=[frame, frame])
 
-    def table(value):
+    def table(value: str) -> str:
         return f"<table><tr><td>{value}</td></tr></table>"
 
     replies = []
@@ -489,7 +495,9 @@ async def test_inference_timeout_records_diagnostics_without_retries(tmp_path: P
     Image.new("RGB", (40, 40), "black").save(path)
 
     class TimeoutRuntime:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             raise TimeoutError()
 
     with pytest.raises(TimeoutError):
@@ -524,12 +532,12 @@ def test_markdown_tail_cleanup_is_bounded() -> None:
 
 
 class ParallelRuntime:
-    def __init__(self):
+    def __init__(self) -> None:
         self.active = 0
         self.peak = 0
         self.prompts = []
 
-    async def infer(self, images, prompt, *, max_tokens=None):
+    async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
         self.prompts.append(prompt)
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -561,7 +569,9 @@ async def test_structured_failure_keeps_markdown_and_page_image(tmp_path: Path) 
     Image.new("RGB", (30, 30), "black").save(path)
 
     class FailureRuntime:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             if '"category": "string"}' in prompt:
                 return '[{"bbox":[0,0,1000,1000],"category":"text"}]'
             if (
@@ -620,7 +630,9 @@ async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path: Pa
         usage = {}
 
     class Model:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             if '"category": "string"}' in prompt:
                 return '[{"bbox":[0,0,1000,1000],"category":"table"}]'
             response = Limited(
@@ -686,7 +698,9 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
     fragment = "<table><tr><td>complete</td></tr></table>"
 
     class Model:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             if '"category": "string"}' in prompt:
                 return json.dumps([{"bbox": [100, 100, 500, 500], "category": "table"}])
             if Path(images[0]).name.startswith("formula-"):
@@ -697,7 +711,15 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
                 )
             return structured("ordinary text")
 
-    async def inspect(result, workdir, runtime, render_html, *, max_tokens, recover_page):
+    async def inspect(
+        result: DocumentResult,
+        workdir: Path,
+        runtime: Inference,
+        render_html: Callable[[str, Path], Awaitable[None]],
+        *,
+        max_tokens: int,
+        recover_page: Callable[[int], Awaitable[Page]],
+    ) -> None:
         original = Block("table", "<table><tr><td>unfinished", bbox=(0.1, 0.1, 0.5, 0.5))
         result.pages[0].blocks.append(original)
         recovered = await recover_page(0)
@@ -719,11 +741,13 @@ async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_p
     Image.new("RGB", (100, 100), "black").save(path)
 
     class Model:
-        def __init__(self):
+        def __init__(self) -> None:
             self.started = 0
             self.both = asyncio.Event()
 
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             if '"category": "string"}' in prompt:
                 return assessment(math=True)[7:]
             if (
@@ -762,7 +786,16 @@ async def test_independent_page_verification_runs_concurrently(
     started = []
     both = asyncio.Event()
 
-    async def verify(pipeline, page, imagepath, diagnostics, *args, **kwargs):
+    async def verify(
+        pipeline: VerificationPipeline,
+        page: Page,
+        imagepath: Path,
+        diagnostics: list[Diagnostic],
+        recovery: Callable[[], Path] | None = None,
+        *,
+        crop_pdf: Callable[..., Path] | None = None,
+        region_imagepath: Path | None = None,
+    ) -> Page:
         started.append(page.page_idx)
         if len(started) == 2:
             both.set()

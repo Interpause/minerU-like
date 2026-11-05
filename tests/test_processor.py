@@ -18,10 +18,12 @@ async def test_delivery_does_not_add_model_calls(tmp_path: Path) -> None:
     image.save(source)
 
     class Runtime:
-        def __init__(self):
+        def __init__(self) -> None:
             self.calls = []
 
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             self.calls.append((Path(images[0]), Path(images[0]).read_bytes()))
             if len(self.calls) == 1:
                 return json.dumps([{"category": "image", "bbox": [0, 0, 1000, 1000]}])

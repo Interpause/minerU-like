@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -8,7 +9,8 @@ from mineru_like.config import RuntimeSettings, Settings, load_settings
 
 def test_no_lower_precision_kv() -> None:
     with pytest.raises(ValidationError):
-        RuntimeSettings(kv_cache="q4_0")
+        # Exercise validation with a value deliberately outside the annotated choices.
+        RuntimeSettings(kv_cache=cast(Any, "q4_0"))
 
 
 def test_toml_and_unknown_option(tmp_path: Path) -> None:
@@ -55,7 +57,7 @@ def test_paths_follow_config_location_and_custom_data_directory(
 
 
 @pytest.mark.parametrize("slots", [0, -1])
-def test_invalid_parallel_slots(slots) -> None:
+def test_invalid_parallel_slots(slots: int) -> None:
     with pytest.raises(ValidationError):
         RuntimeSettings(parallel_slots=slots)
 
@@ -77,6 +79,6 @@ def test_binary_discovery_and_ambiguity(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("value", [0, -2])
-def test_invalid_image_max_tokens(value) -> None:
+def test_invalid_image_max_tokens(value: int) -> None:
     with pytest.raises(ValidationError):
         RuntimeSettings(image_max_tokens=value)

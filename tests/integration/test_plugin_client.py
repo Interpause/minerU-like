@@ -6,6 +6,7 @@ import os
 import shutil
 import socket
 from pathlib import Path
+from typing import Any
 
 import pytest
 import uvicorn
@@ -69,7 +70,7 @@ async def test_plugin_client_lifecycle(
     class Adapter:
         tiers = ("standard", "advanced")
 
-        async def parse(self, **kwargs):
+        async def parse(self, **kwargs: Any) -> DocumentResult:
             return await parser(**kwargs)
 
     app = create_app(

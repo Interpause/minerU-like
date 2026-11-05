@@ -2,25 +2,32 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from mineru_like.config import LibreOfficeSettings
+from mineru_like.contracts import Inference
 from mineru_like.libreoffice import LibreOfficeRenderer
+from mineru_like.result import DocumentResult
 
 
-def settings(**kwargs):
-    return SimpleNamespace(
-        **(
-            {
-                "mode": "system",
-                "binary": Path("/fake/soffice"),
-                "flatpak_binary": "flatpak",
-                "flatpak_app_id": "org.libreoffice.LibreOffice",
-                "timeout": 2,
-                "max_output_bytes": 10000,
-            }
-            | kwargs
-        )
+def settings(**kwargs: object) -> LibreOfficeSettings:
+    return cast(
+        LibreOfficeSettings,
+        SimpleNamespace(
+            **(
+                {
+                    "mode": "system",
+                    "binary": Path("/fake/soffice"),
+                    "flatpak_binary": "flatpak",
+                    "flatpak_app_id": "org.libreoffice.LibreOffice",
+                    "timeout": 2,
+                    "max_output_bytes": 10000,
+                }
+                | kwargs
+            )
+        ),
     )
 
 
@@ -31,7 +38,7 @@ async def test_system_conversion_is_staged_and_uses_private_profile(
     renderer = LibreOfficeRenderer(settings())
     commands = []
 
-    async def run(args, **kwargs):
+    async def run(args: list[str], **kwargs: object) -> int:
         commands.append(args)
         if "--convert-to" in args:
             job = Path(args[args.index("--outdir") + 1])
@@ -58,7 +65,7 @@ async def test_flatpak_uses_instance_scoped_and_job_options(
     monkeypatch.setattr("mineru_like.libreoffice.shutil.which", lambda _: "/usr/bin/flatpak")
     commands = []
 
-    async def run(args, **kwargs):
+    async def run(args: list[str], **kwargs: object) -> int:
         commands.append(args)
         if "--convert-to" in args:
             job = Path(args[args.index("--outdir") + 1])
@@ -95,7 +102,7 @@ async def test_chart_supplement_preserves_cells_and_marks_unmatched(
     from mineru_like.config import Settings
     from mineru_like.native import parse_native
     from mineru_like.pipeline import Pipeline
-    from mineru_like.result import Block, DocumentResult, Page
+    from mineru_like.result import Block, Page
 
     workbook = Workbook()
     sheet = workbook.active
@@ -110,10 +117,10 @@ async def test_chart_supplement_preserves_cells_and_marks_unmatched(
     image = tmp_path / "chart.png"
     image.write_bytes(b"image")
 
-    async def convert(self, source, suffix, workdir):
+    async def convert(self: LibreOfficeRenderer, source: Path, suffix: str, workdir: Path) -> Path:
         return fake_pdf
 
-    async def parse(*args):
+    async def parse(*args: object) -> DocumentResult:
         return DocumentResult(
             pages=[
                 Page(
@@ -138,7 +145,7 @@ async def test_chart_supplement_preserves_cells_and_marks_unmatched(
         "mineru_like.native._spreadsheet_render_regions",
         lambda *args: [(fake_pdf, 1, (0, 0, 100, 100))],
     )
-    pipeline = Pipeline(Settings(captioning=False), object())
+    pipeline = Pipeline(Settings(captioning=False), cast(Inference, object()))
     monkeypatch.setattr(pipeline, "parse", parse)
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -212,7 +219,7 @@ async def test_native_failure_fallback_labels_visual_provenance(
     from mineru_like.config import Settings
     from mineru_like.native import parse_native
     from mineru_like.pipeline import Pipeline
-    from mineru_like.result import Block, DocumentResult, Page
+    from mineru_like.result import Block, Page
 
     source = tmp_path / "file.docx"
     source.write_bytes(b"not a zip")
@@ -222,16 +229,16 @@ async def test_native_failure_fallback_labels_visual_provenance(
         docvortex, "parse", lambda *a, **kw: (_ for _ in ()).throw(ValueError("broken"))
     )
 
-    async def convert(self, source, suffix, workdir):
+    async def convert(self: LibreOfficeRenderer, source: Path, suffix: str, workdir: Path) -> Path:
         return tmp_path / "rendered.pdf"
 
-    async def parse(*args):
+    async def parse(*args: object) -> DocumentResult:
         return DocumentResult(
             pages=[Page(page_idx=0, blocks=[Block(type="text", content="Recovered")])]
         )
 
     monkeypatch.setattr(LibreOfficeRenderer, "convert", convert)
-    pipeline = Pipeline(Settings(captioning=False), object())
+    pipeline = Pipeline(Settings(captioning=False), cast(Inference, object()))
     monkeypatch.setattr(pipeline, "parse", parse)
     result = await parse_native(source, "docx", workdir, pipeline)
     assert result.pages[0].blocks[0].metadata["source"] == "libreoffice_visual_fallback"
@@ -298,13 +305,13 @@ async def test_native_chart_without_body_uses_visual_supplement(
     from mineru_like.config import Settings
     from mineru_like.native import parse_native
     from mineru_like.pipeline import Pipeline
-    from mineru_like.result import Block, DocumentResult, Page
+    from mineru_like.result import Block, Page
 
     class NativeResult:
         diagnostics = []
         assets = {}
 
-        def to_dict(self):
+        def to_dict(self) -> dict[str, Any]:
             return {
                 "pages": [
                     {
@@ -323,10 +330,10 @@ async def test_native_chart_without_body_uses_visual_supplement(
     image = tmp_path / "chart.png"
     image.write_bytes(b"image")
 
-    async def convert(self, source, suffix, workdir):
+    async def convert(self: LibreOfficeRenderer, source: Path, suffix: str, workdir: Path) -> Path:
         return tmp_path / "source.pdf"
 
-    async def parse(*args):
+    async def parse(*args: object) -> DocumentResult:
         return DocumentResult(
             pages=[
                 Page(
@@ -341,7 +348,7 @@ async def test_native_chart_without_body_uses_visual_supplement(
         )
 
     monkeypatch.setattr(LibreOfficeRenderer, "convert", convert)
-    pipeline = Pipeline(Settings(captioning=False), object())
+    pipeline = Pipeline(Settings(captioning=False), cast(Inference, object()))
     monkeypatch.setattr(pipeline, "parse", parse)
     workdir = tmp_path / "work"
     workdir.mkdir()

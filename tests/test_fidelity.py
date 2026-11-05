@@ -1,10 +1,15 @@
 from types import SimpleNamespace
+from typing import cast
 
 from PIL import Image, ImageDraw
 
+from mineru_like.config import CompressionSettings
 from mineru_like.fidelity import compare
 
-SETTINGS = SimpleNamespace(global_ssim=0.995, local_ssim=0.98, edge_recall=0.995)
+# The comparator only reads these three settings; keep this fixture intentionally partial.
+SETTINGS = cast(
+    CompressionSettings, SimpleNamespace(global_ssim=0.995, local_ssim=0.98, edge_recall=0.995)
+)
 
 
 def test_identical_image_passes() -> None:

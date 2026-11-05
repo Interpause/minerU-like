@@ -4,27 +4,30 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from typing import Any, Never, cast
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx2 import Response
 
 from mineru_like.api import create_app
 from mineru_like.config import Settings
+from mineru_like.contracts import Parser
 
 
 class Result:
-    def write_zip(self, path):
+    def write_zip(self, path: Path) -> None:
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("markdown.md", "test")
             archive.writestr("structured_content.json", '{"pages": []}')
 
 
-async def parser(**kwargs):
+async def parser(**kwargs: Any) -> Result:
     assert kwargs["input_path"].read_bytes() == b"%PDF"
     return Result()
 
 
-def upload(client):
+def upload(client: TestClient) -> str:
     response = client.post(
         "/v1/uploads", json={"filename": "test.pdf", "bytes": 4, "mime_type": "application/pdf"}
     )
@@ -35,7 +38,7 @@ def upload(client):
     return item["id"]
 
 
-def submit(client, file_id):
+def submit(client: TestClient, file_id: str) -> Response:
     return client.post(
         "/v1/parse/jobs",
         json={
@@ -47,7 +50,7 @@ def submit(client, file_id):
     )
 
 
-def wait_status(client, ident, desired):
+def wait_status(client: TestClient, ident: str, desired: set[str]) -> dict[str, Any]:
     for _ in range(200):
         data = client.get("/v1/parse/jobs/" + ident).json()
         if data["status"] in desired:
@@ -78,7 +81,7 @@ def test_tier_discovery_and_native_advanced_rejection(tmp_path: Path) -> None:
     class EngineParser:
         tiers = ("standard", "advanced")
 
-        async def parse(self, **kwargs):
+        async def parse(self, **kwargs: Any) -> Result:
             return Result()
 
     app = create_app(Settings(data_dir=tmp_path), EngineParser().parse)
@@ -98,10 +101,10 @@ def test_tier_discovery_and_native_advanced_rejection(tmp_path: Path) -> None:
 
 
 def test_validation_and_running_cancellation(tmp_path: Path) -> None:
-    async def slow(**kwargs):
+    async def slow(**kwargs: Any) -> None:
         await asyncio.sleep(60)
 
-    app = create_app(Settings(data_dir=tmp_path, max_upload_bytes=4), slow)
+    app = create_app(Settings(data_dir=tmp_path, max_upload_bytes=4), cast(Parser, slow))
     with TestClient(app) as client:
         assert client.post("/v1/uploads", json={"filename": "a", "bytes": 5}).status_code == 413
         response = client.post("/v1/uploads", json={"filename": "a", "bytes": 4}).json()
@@ -138,7 +141,7 @@ def test_unbounded_jobs_overlap_and_cancellation_is_isolated(tmp_path: Path) -> 
     entered = set()
     release = threading.Event()
 
-    async def slow(**kwargs):
+    async def slow(**kwargs: Any) -> Result:
         entered.add(kwargs["workdir"].name)
         while not release.is_set():
             await asyncio.sleep(0.01)
@@ -162,7 +165,7 @@ def test_unbounded_jobs_overlap_and_cancellation_is_isolated(tmp_path: Path) -> 
 
 
 def test_job_failure_is_reported(tmp_path: Path) -> None:
-    async def broken(**kwargs):
+    async def broken(**kwargs: Any) -> Never:
         raise ValueError("bad document")
 
     with TestClient(create_app(Settings(data_dir=tmp_path), broken)) as client:
@@ -175,7 +178,7 @@ def test_job_failure_is_reported(tmp_path: Path) -> None:
 def test_lower_tiers_upgrade_to_standard(tmp_path: Path, tier: str) -> None:
     seen = []
 
-    async def capture(**kwargs):
+    async def capture(**kwargs: Any) -> Result:
         seen.append(kwargs["tier"])
         return Result()
 
@@ -198,10 +201,10 @@ def test_engine_lifecycle_and_config_snapshot(tmp_path: Path) -> None:
         state = "stopped"
         device = "cpu"
 
-        async def start(self):
+        async def start(self) -> None:
             self.state = "ready"
 
-        async def close(self):
+        async def close(self) -> None:
             self.state = "stopped"
 
     engine = Engine()
@@ -256,12 +259,12 @@ def test_cancel_waits_for_zip_writer_and_discards_output(tmp_path: Path) -> None
     entered, release = threading.Event(), threading.Event()
 
     class SlowResult:
-        def write_zip(self, path):
+        def write_zip(self, path: Path) -> None:
             entered.set()
             assert release.wait(5)
             path.write_bytes(b"zip")
 
-    async def quick(**kwargs):
+    async def quick(**kwargs: Any) -> SlowResult:
         return SlowResult()
 
     with TestClient(create_app(Settings(data_dir=tmp_path), quick)) as client:
@@ -329,7 +332,7 @@ def test_data_directory_has_single_owner(tmp_path: Path) -> None:
 
 
 def test_failed_job_diagnostics_are_retained_then_expire(tmp_path: Path) -> None:
-    async def broken(**kwargs):
+    async def broken(**kwargs: Any) -> Never:
         (kwargs["workdir"] / "diagnostics.jsonl").write_text("diagnostic")
         raise ValueError("parse failed")
 

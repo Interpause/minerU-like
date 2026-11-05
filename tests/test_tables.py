@@ -1,11 +1,18 @@
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PIL import Image
 
+from mineru_like.contracts import Inference
 from mineru_like.result import Block, DocumentResult, Page
 from mineru_like.tables import reconstruct_tables
+
+# These dependencies are deliberately unused in branches under test.
+UNUSED_RENDER = cast(Callable[[str, Path], Awaitable[None]], None)
+UNUSED_INFERENCE = cast(Inference, None)
 
 
 def table(*cells: str) -> str:
@@ -20,14 +27,16 @@ async def test_three_page_reconstruction_renders_intermediate(tmp_path: Path) ->
     calls = []
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             calls.append((images, prompt))
             content = table("1", "2") if len(calls) == 1 else table("0", "1", "2")
             return json.dumps([{"source_pages": [1, 2], "html": content}])
 
     rendered = []
 
-    async def render_html(value, output):
+    async def render_html(value: str, output: Path) -> None:
         rendered.append(value)
         Image.new("RGB", (20, 20), "white").save(output)
 
@@ -46,10 +55,12 @@ async def test_reconstruction_refuses_lost_cells(tmp_path: Path) -> None:
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(2)])
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("0")}])
 
-    async def render_html(value, output):
+    async def render_html(value: str, output: Path) -> None:
         raise AssertionError("No render needed")
 
     assert await reconstruct_tables(result, tmp_path, Runtime(), render_html, max_tokens=1000) == 0
@@ -65,7 +76,9 @@ async def test_docvortex_renders_intermediate_table(tmp_path: Path) -> None:
     await render_table_html(table("Alpha", "42"), output)
     with Image.open(output) as image:
         assert image.width > 100 and image.height > 100
-        assert image.convert("L").getextrema()[0] < 250
+        extrema = image.convert("L").getextrema()
+        assert isinstance(extrema[0], (float, int))
+        assert extrema[0] < 250
 
 
 @pytest.mark.asyncio
@@ -73,10 +86,12 @@ async def test_reconstruction_rejects_invented_cells(tmp_path: Path) -> None:
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(2)])
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("0", "1", "invented")}])
 
-    async def render_html(value, output):
+    async def render_html(value: str, output: Path) -> None:
         raise AssertionError("No render needed")
 
     assert await reconstruct_tables(result, tmp_path, Runtime(), render_html, max_tokens=1000) == 0
@@ -94,20 +109,25 @@ async def test_candidate_on_one_side_and_explicit_negative(tmp_path: Path, hint:
     result = DocumentResult([left, Page(1, [Block("text", "following")])])
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             assert "following" in prompt
             return json.dumps(
                 [{"source_pages": [], "html": "No cross-page table exists between these pages."}]
             )
 
-    assert await reconstruct_tables(result, tmp_path, Runtime(), None, max_tokens=100) == 0
+    assert await reconstruct_tables(result, tmp_path, Runtime(), UNUSED_RENDER, max_tokens=100) == 0
     assert result.diagnostics[-1]["outcome"] == "no_continuation"
 
 
 @pytest.mark.asyncio
 async def test_heuristic_skip_is_not_model_negative(tmp_path: Path) -> None:
     result = DocumentResult([Page(0, [Block("text", "hello")]), Page(1, [Block("text", "world")])])
-    assert await reconstruct_tables(result, tmp_path, None, None, max_tokens=100) == 0
+    assert (
+        await reconstruct_tables(result, tmp_path, UNUSED_INFERENCE, UNUSED_RENDER, max_tokens=100)
+        == 0
+    )
     assert result.diagnostics[-1]["outcome"] == "heuristic_skip"
 
 
@@ -120,12 +140,14 @@ async def test_recovery_and_truncated_fragment(tmp_path: Path) -> None:
         ]
     )
 
-    async def recover(index):
+    async def recover(index: int) -> Page:
         assert index == 1
         return Page(1, [Block("text", "paragraph"), Block("table", table("b"))])
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             from mineru_like.runtime import InferenceResponse
 
             return InferenceResponse(
@@ -134,7 +156,7 @@ async def test_recovery_and_truncated_fragment(tmp_path: Path) -> None:
 
     assert (
         await reconstruct_tables(
-            result, tmp_path, Runtime(), None, max_tokens=100, recover_page=recover
+            result, tmp_path, Runtime(), UNUSED_RENDER, max_tokens=100, recover_page=recover
         )
         == 1
     )
@@ -154,13 +176,15 @@ async def test_three_page_merge_preserves_non_table_content(tmp_path: Path) -> N
     )
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             cells = ("1", "2") if images[0].name == "page-1.png" else ("0", "1", "2")
             if cells[0] == "0":
                 assert "paragraph 1" in prompt and table("1", "2") in prompt
             return json.dumps([{"source_pages": [1, 2], "html": table(*cells)}])
 
-    async def render(value, output):
+    async def render(value: str, output: Path) -> None:
         assert "paragraph 1" in value
         Image.new("RGB", (10, 10), "white").save(output)
 
@@ -177,11 +201,13 @@ async def test_runtime_failure_propagates(tmp_path: Path) -> None:
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(2)])
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             raise InferenceError("server unavailable")
 
     with pytest.raises(InferenceError, match="server unavailable"):
-        await reconstruct_tables(result, tmp_path, Runtime(), None, max_tokens=100)
+        await reconstruct_tables(result, tmp_path, Runtime(), UNUSED_RENDER, max_tokens=100)
 
 
 @pytest.mark.asyncio
@@ -200,16 +226,18 @@ async def test_recovery_does_not_modify_page_when_merge_not_accepted(
     original = Page(1, [Block("text", "original text")])
     result = DocumentResult([Page(0, [Block("table", table("a"))]), original])
 
-    async def recover(index):
+    async def recover(index: int) -> Page:
         return Page(index, [Block("text", "original text"), Block("table", table("b"))])
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return response
 
     assert (
         await reconstruct_tables(
-            result, tmp_path, Runtime(), None, max_tokens=100, recover_page=recover
+            result, tmp_path, Runtime(), UNUSED_RENDER, max_tokens=100, recover_page=recover
         )
         == 0
     )
@@ -228,10 +256,12 @@ async def test_reconstruction_accepts_deduplicated_repeated_first_row(tmp_path: 
     )
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("Header", "a", "b")}])
 
-    assert await reconstruct_tables(result, tmp_path, Runtime(), None, max_tokens=100) == 1
+    assert await reconstruct_tables(result, tmp_path, Runtime(), UNUSED_RENDER, max_tokens=100) == 1
     assert result.diagnostics[-1]["source_pages"] == [0, 1]
 
 
@@ -241,19 +271,21 @@ async def test_empty_fragment_triggers_targeted_recovery(tmp_path: Path) -> None
         [Page(0, [Block("table", table("a"))]), Page(1, [Block("table", "<table><tr><td>partial")])]
     )
 
-    async def recover(index):
+    async def recover(index: int) -> Page:
         assert index == 1
         return Page(
             1, [Block("table", table("b"), metadata={"original": "<table><tr><td>partial"})]
         )
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return json.dumps([{"source_pages": [1, 2], "html": table("a", "b")}])
 
     assert (
         await reconstruct_tables(
-            result, tmp_path, Runtime(), None, max_tokens=100, recover_page=recover
+            result, tmp_path, Runtime(), UNUSED_RENDER, max_tokens=100, recover_page=recover
         )
         == 1
     )

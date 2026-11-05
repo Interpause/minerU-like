@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Any, Literal, cast
 
 import httpx2 as httpx
 import pytest
@@ -10,15 +12,22 @@ from mineru_like.config import RuntimeSettings
 from mineru_like.runtime import InferenceError, InferenceRuntime
 
 
-def make_runtime(handler):
+def make_runtime(
+    handler: Callable[[httpx.Request], httpx.Response]
+    | Callable[[httpx.Request], Coroutine[Any, Any, httpx.Response]],
+) -> InferenceRuntime:
     runtime = InferenceRuntime(
         RuntimeSettings(mode="external", base_url="http://server", api_key="secret")
     )
-    runtime._make_client = lambda url, key: httpx.AsyncClient(
-        base_url=url,
-        transport=httpx.MockTransport(handler),
-        headers={"Authorization": f"Bearer {key}"},
-    )
+
+    def make_client(base_url: str, key: str | None) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=base_url,
+            transport=httpx.MockTransport(handler),
+            headers={"Authorization": f"Bearer {key}"},
+        )
+
+    setattr(runtime, "_make_client", make_client)
     return runtime
 
 
@@ -26,7 +35,7 @@ def make_runtime(handler):
 async def test_vision_request_and_incomplete_response(tmp_path: Path) -> None:
     requests = []
 
-    def handler(request):
+    def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "vision"}]})
@@ -58,11 +67,13 @@ async def test_vision_request_and_incomplete_response(tmp_path: Path) -> None:
 async def test_external_cancellation_keeps_server_usable(tmp_path: Path) -> None:
     started = asyncio.Event()
 
-    async def handler(request):
+    async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "vision"}]})
         started.set()
         await asyncio.Event().wait()
+        # The event is never set; retain the implicit None if the fixture changes.
+        return cast(httpx.Response, None)
 
     runtime = make_runtime(handler)
     image = tmp_path / "page.png"
@@ -90,7 +101,7 @@ async def test_lfs_pointer_rejected_before_request(tmp_path: Path) -> None:
 async def test_managed_preflight_rejects_context_overflow(tmp_path: Path) -> None:
     calls = []
 
-    def handler(request):
+    def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
         return httpx.Response(200, json={"tokens": list(range(5000))})
 
@@ -120,14 +131,14 @@ async def test_managed_command_and_subprocess_library_environment(
     monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/lib")
 
     class Child:
-        returncode = None
+        returncode: int | None = None
 
-        async def communicate(self):
+        async def communicate(self) -> tuple[bytes, bytes]:
             if calls[-1][0][-1] == "--version":
                 return b"version: build 12110 (commit cd959bae9)", b""
             return b"CUDA0: device", b""
 
-    async def launch(*args, **kwargs):
+    async def launch(*args: str, **kwargs: Any) -> Child:
         calls.append((args, kwargs))
         child = Child()
         if args[-1] in {"--version", "--list-devices"}:
@@ -147,14 +158,14 @@ async def test_managed_command_and_subprocess_library_environment(
     )
     runtime.device = await runtime._select_device(binary)
 
-    async def ready():
+    async def ready() -> None:
         return None
 
-    runtime._check_models = ready
+    setattr(runtime, "_check_models", ready)
     await runtime._launch(binary, tmp_path / "model", tmp_path / "mmproj")
     command = calls[-1][0]
 
-    def value(flag):
+    def value(flag: str) -> str:
         return command[command.index(flag) + 1]
 
     assert value("--parallel") == "3"
@@ -180,16 +191,16 @@ async def test_cuda_probe_does_not_treat_load_error_as_device(
     class Probe:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self) -> tuple[bytes, bytes]:
             return b"Available devices:\n  (none)\n", b"failed to load CUDA backend"
 
-    async def launch(*args, **kwargs):
+    async def launch(*args: str, **kwargs: Any) -> Probe:
         return Probe()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
     runtime = InferenceRuntime(RuntimeSettings(device="cuda"))
     with pytest.raises(InferenceError, match="no CUDA device"):
-        await runtime._select_device("server")
+        await runtime._select_device(Path("server"))
 
 
 def test_rejects_invalid_gguf(tmp_path: Path) -> None:
@@ -201,8 +212,10 @@ def test_rejects_invalid_gguf(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["managed", "external"])
-async def test_absolute_request_timeout_respects_ownership(tmp_path: Path, mode: str) -> None:
-    async def handler(request):
+async def test_absolute_request_timeout_respects_ownership(
+    tmp_path: Path, mode: Literal["managed", "external"]
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/tokenize":
             return httpx.Response(200, json={"tokens": [1]})
         await asyncio.sleep(1)
@@ -226,6 +239,7 @@ async def test_external_v1_base_url_normalization() -> None:
     runtime = InferenceRuntime(
         RuntimeSettings(mode="external", base_url="http://server/prefix/v1/")
     )
+    assert runtime.settings.base_url is not None
     client = runtime._make_client(runtime.settings.base_url, None)
     assert str(client.base_url.join("v1/models")) == "http://server/prefix/v1/models"
     await client.aclose()
@@ -237,7 +251,7 @@ async def test_concurrent_managed_requests_and_cancellation(tmp_path: Path) -> N
     release = asyncio.Event()
     count = 0
 
-    async def handler(request):
+    async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal count
         count += 1
         if count == 2:

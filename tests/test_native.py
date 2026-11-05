@@ -1,10 +1,12 @@
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from docx import Document
 from PIL import Image
 
 from mineru_like.config import Settings
+from mineru_like.contracts import Inference
 from mineru_like.native import _inference_image
 from mineru_like.pipeline import Pipeline
 
@@ -51,7 +53,7 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(
         diagnostics = []
         assets = {"images/shape.svg": svg}
 
-        def to_dict(self):
+        def to_dict(self) -> dict[str, Any]:
             return {
                 "pages": [
                     {
@@ -70,7 +72,9 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(
     monkeypatch.setattr(docvortex, "parse", lambda *args, **kwargs: NativeResult())
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             with Image.open(images[0]) as image:
                 assert image.format == "PNG"
                 assert image.getpixel((0, 0)) == (0, 0, 0)
@@ -93,14 +97,14 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(
 async def test_real_csv_conversion(tmp_path: Path) -> None:
     path = tmp_path / "sample.csv"
     path.write_text("name,value\nalpha,42\n")
-    result = await Pipeline(Settings(), None).parse(
+    result = await Pipeline(Settings(), cast(Inference, None)).parse(
         path, path.name, "auto", "standard", tmp_path / "out"
     )
     assert result.pages[0].blocks[0].type == "table"
     assert "alpha" in result.markdown()
     result.validate()
     with pytest.raises(ValueError, match="Advanced verification"):
-        await Pipeline(Settings(), None).parse(
+        await Pipeline(Settings(), cast(Inference, None)).parse(
             path, path.name, "auto", "advanced", tmp_path / "advanced"
         )
 
@@ -112,7 +116,7 @@ async def test_inline_svg_is_not_silently_dropped(tmp_path: Path) -> None:
         '<html><body><p>Text</p><svg width="20" height="20"><rect width="20" height="20"/></svg></body></html>'
     )
     with pytest.raises(ValueError, match="inline SVG preservation"):
-        await Pipeline(Settings(), None).parse(
+        await Pipeline(Settings(), cast(Inference, None)).parse(
             source, source.name, "auto", "standard", tmp_path / "out"
         )
 
@@ -128,7 +132,9 @@ async def test_native_embedded_raster_formula_is_supplemental(tmp_path: Path) ->
     document.save(str(source))
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"}]'
 
     result = await Pipeline(Settings(captioning=False), Runtime()).parse(

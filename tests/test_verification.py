@@ -1,16 +1,21 @@
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar, cast
 
 import pytest
 from PIL import Image
 
 from mineru_like import pipeline as pipeline_module
+from mineru_like.config import Settings
+from mineru_like.contracts import Diagnostic
 from mineru_like.result import Block, Page
 from mineru_like.verification import verify_page
+
+T = TypeVar("T")
 
 
 @pytest.mark.asyncio
 async def test_small_text_comparison_includes_matching_header_numbers(tmp_path: Path) -> None:
-    from mineru_like.config import Settings
     from mineru_like.pipeline import Pipeline
     from mineru_like.verification import verify_small_text_regions
 
@@ -20,7 +25,9 @@ async def test_small_text_comparison_includes_matching_header_numbers(tmp_path: 
     ]
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return "Journal 310 (2005) 253–265 Small text body"
 
     diagnostics = []
@@ -38,24 +45,37 @@ async def test_small_text_comparison_includes_matching_header_numbers(tmp_path: 
 
 
 class Pipeline:
-    def __init__(self, markdown, region=None):
+    settings = Settings()
+
+    def __init__(self, markdown: str | None, region: str | None = None) -> None:
         self.markdown, self.region = markdown, region
         self.stages = []
 
-    async def _infer_valid(self, images, prompt, validator, diagnostics, page_idx, stage, recovery):
+    async def _infer_valid(
+        self,
+        images: list[Path],
+        prompt: str,
+        validator: Callable[[str], T],
+        diagnostics: list[Diagnostic],
+        page_idx: int,
+        stage: str,
+        recovery: Callable[[], Path] | None = None,
+    ) -> T:
         self.stages.append(stage)
         if stage == "advanced_markdown":
-            return validator(self.markdown)
+            return validator(cast(str, self.markdown))
         try:
             import json
 
-            return validator(" ".join(item["content"] for item in json.loads(self.region)))
+            return validator(
+                " ".join(item["content"] for item in json.loads(cast(str, self.region)))
+            )
         except (ValueError, TypeError):
-            return validator(self.region)
+            return validator(cast(str, self.region))
 
 
 @pytest.fixture
-def context(tmp_path, monkeypatch):
+def context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name in ("document_markdown.txt", "document_structured.txt", "region_ocr.txt"):
         (tmp_path / name).write_text("prompt")
     monkeypatch.setattr(pipeline_module, "PROMPTS", tmp_path)
@@ -65,7 +85,7 @@ def context(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_benign_formatting_and_native_text_preserved(context) -> None:
+async def test_benign_formatting_and_native_text_preserved(context: Path) -> None:
     block = Block("text", "Revenue grew by 42 percent.", metadata={"source": "native"})
     page = Page(0, [block])
     diagnostics = []
@@ -78,7 +98,7 @@ async def test_benign_formatting_and_native_text_preserved(context) -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_table_cell_retains_uncertain_source_image(context) -> None:
+async def test_missing_table_cell_retains_uncertain_source_image(context: Path) -> None:
     page = Page(0, [Block("table", "<table><tr><td>North</td><td>52</td></tr></table>")])
     diagnostics = []
     await verify_page(Pipeline("North | 53"), page, context, diagnostics)
@@ -87,7 +107,7 @@ async def test_missing_table_cell_retains_uncertain_source_image(context) -> Non
 
 
 @pytest.mark.asyncio
-async def test_targeted_region_recovery_requires_independent_support(context) -> None:
+async def test_targeted_region_recovery_requires_independent_support(context: Path) -> None:
     block = Block("text", "The value is 52", bbox=(0, 0, 1, 1), metadata={"source": "visual"})
     page = Page(0, [block])
     region = '[{"category":"text","content":"The value is 53","bbox":[0,0,999,999]}]'
@@ -99,7 +119,7 @@ async def test_targeted_region_recovery_requires_independent_support(context) ->
 
 
 @pytest.mark.asyncio
-async def test_native_disagreement_does_not_overwrite(context) -> None:
+async def test_native_disagreement_does_not_overwrite(context: Path) -> None:
     block = Block("text", "The value is 52", bbox=(0, 0, 1, 1), metadata={"source": "native"})
     page = Page(0, [block])
     await verify_page(Pipeline("The value is 53"), page, context, [])
@@ -108,7 +128,7 @@ async def test_native_disagreement_does_not_overwrite(context) -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_word_in_table_cell_is_material_even_on_long_page(context) -> None:
+async def test_missing_word_in_table_cell_is_material_even_on_long_page(context: Path) -> None:
     prose = " ".join(f"word{i}" for i in range(60))
     page = Page(
         0, [Block("text", prose), Block("table", "<table><tr><td>uniquevalue</td></tr></table>")]
@@ -118,21 +138,21 @@ async def test_missing_word_in_table_cell_is_material_even_on_long_page(context)
 
 
 @pytest.mark.asyncio
-async def test_formula_operator_difference_fails(context) -> None:
+async def test_formula_operator_difference_fails(context: Path) -> None:
     page = Page(0, [Block("equation", r"$x+y$")])
     await verify_page(Pipeline(r"$x-y$"), page, context, [])
     assert page.blocks[-1].image_source
 
 
 @pytest.mark.asyncio
-async def test_table_words_in_wrong_cells_fail(context) -> None:
+async def test_table_words_in_wrong_cells_fail(context: Path) -> None:
     page = Page(0, [Block("table", "<table><tr><td>red blue</td><td>green</td></tr></table>")])
     await verify_page(Pipeline("| red | blue green |"), page, context, [])
     assert page.blocks[-1].image_source
 
 
 @pytest.mark.asyncio
-async def test_standard_checks_only_flagged_regions(context) -> None:
+async def test_standard_checks_only_flagged_regions(context: Path) -> None:
     from mineru_like.verification import verify_suspicious_regions
 
     region = '[{"category":"text","content":"uncertain text","bbox":[0,0,999,999]}]'
@@ -151,10 +171,21 @@ async def test_standard_checks_only_flagged_regions(context) -> None:
 
 
 class NewPipeline:
-    def __init__(self, markdown, region):
+    settings = Settings()
+
+    def __init__(self, markdown: str, region: str) -> None:
         self.markdown, self.region = markdown, region
 
-    async def _infer_valid(self, images, prompt, validator, diagnostics, page_idx, stage, recovery):
+    async def _infer_valid(
+        self,
+        images: list[Path],
+        prompt: str,
+        validator: Callable[[str], T],
+        diagnostics: list[Diagnostic],
+        page_idx: int,
+        stage: str,
+        recovery: Callable[[], Path] | None = None,
+    ) -> T:
         return validator(self.markdown if stage == "advanced_markdown" else self.region)
 
 
@@ -182,7 +213,7 @@ async def test_local_region_resolves_disagreement(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reversed_sentence_is_unresolved(context) -> None:
+async def test_reversed_sentence_is_unresolved(context: Path) -> None:
     page = Page(0, [Block("text", "A causes B", metadata={"source": "native"})])
     diagnostics = []
     await verify_page(Pipeline("B causes A"), page, context, diagnostics)
@@ -191,7 +222,7 @@ async def test_reversed_sentence_is_unresolved(context) -> None:
 
 
 @pytest.mark.asyncio
-async def test_swapped_table_cells_are_unresolved(context) -> None:
+async def test_swapped_table_cells_are_unresolved(context: Path) -> None:
     page = Page(0, [Block("table", "<table><tr><td>A</td><td>B</td></tr></table>")])
     diagnostics = []
     await verify_page(Pipeline("| B | A |"), page, context, diagnostics)
@@ -199,7 +230,7 @@ async def test_swapped_table_cells_are_unresolved(context) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unresolved_candidate_preserves_both_transcriptions(context) -> None:
+async def test_unresolved_candidate_preserves_both_transcriptions(context: Path) -> None:
     page = Page(0, [Block("text", "Value 52", bbox=(0, 0, 1, 1), metadata={"source": "visual"})])
     await verify_page(NewPipeline("Value 53", "Value 54"), page, context, [])
     assert page.blocks[0].content == "Value 52"

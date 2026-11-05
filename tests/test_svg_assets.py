@@ -37,6 +37,7 @@ async def test_isolated_svg_removes_outside_text(tmp_path: Path) -> None:
     pdf.close()
     result, block = result_for(tmp_path)
     await improve_pdf_assets(result, source, Settings(), tmp_path)
+    assert block.image_source is not None
     assert block.image_source.endswith(".svg"), result.diagnostics
     svg = result.assets[block.image_source].read_text()
     assert "PRIVATE" not in svg
@@ -58,6 +59,7 @@ async def test_exact_jpeg_extracted_without_raster_tracing(tmp_path: Path) -> No
     pdf.close()
     result, block = result_for(tmp_path)
     await improve_pdf_assets(result, source, Settings(), tmp_path)
+    assert block.image_source is not None
     assert block.image_source.endswith(".jpg"), result.diagnostics
     assert result.assets[block.image_source].read_bytes() == jpeg
 
@@ -87,6 +89,7 @@ async def test_diagram_label_remains_text_when_rendering_matches(tmp_path: Path)
     pdf.close()
     result, block = result_for(tmp_path)
     await improve_pdf_assets(result, source, Settings(), tmp_path)
+    assert block.image_source is not None
     if block.image_source.endswith(".svg"):
         svg = result.assets[block.image_source].read_text()
         assert "LABEL 1.2" in svg
@@ -106,6 +109,7 @@ async def test_rotated_page_figure_is_validated_or_falls_back(tmp_path: Path) ->
     pdf.close()
     result, block = result_for(tmp_path)
     await improve_pdf_assets(result, source, Settings(), tmp_path)
+    assert block.image_source is not None
     assert block.image_source.endswith(".svg"), result.diagnostics
 
 
@@ -122,6 +126,7 @@ async def test_private_source_pdf_and_html_references(tmp_path: Path) -> None:
     block.content = '<img src="images/figure.png">'
     result.markdown_override = '![a](images/figure.png) <img src="images/figure.png">'
     await improve_pdf_assets(result, tmp_path / "original.docx", Settings(), tmp_path)
+    assert block.image_source is not None
     assert block.image_source.endswith(".svg"), result.diagnostics
     assert block.content == f'<img src="{block.image_source}">'
     assert result.markdown_override.count(block.image_source) == 2
@@ -141,6 +146,7 @@ async def test_mixed_embedded_image_and_vector_stays_self_contained(tmp_path: Pa
     pdf.close()
     result, block = result_for(tmp_path)
     await improve_pdf_assets(result, source, Settings(), tmp_path)
+    assert block.image_source is not None
     assert block.image_source.endswith(".svg"), result.diagnostics
     svg = result.assets[block.image_source].read_text()
     assert "data:image/png;base64" in svg
@@ -182,10 +188,10 @@ async def test_cancellation_waits_for_worker_and_prevents_publication(
     started, release = threading.Event(), threading.Event()
     real_isolate = module._isolate
 
-    def blocked(*args):
+    def blocked(svg: str, width: float, height: float) -> bytes:
         started.set()
         assert release.wait(5)
-        return real_isolate(*args)
+        return real_isolate(svg, width, height)
 
     monkeypatch.setattr(module, "_isolate", blocked)
     task = asyncio.create_task(improve_pdf_assets(result, source, Settings(), tmp_path))

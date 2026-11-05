@@ -2,17 +2,20 @@
 
 import json
 import zipfile
+from collections.abc import Mapping
 from email.message import EmailMessage
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from mineru_like.config import Settings
+from mineru_like.contracts import Inference
 from mineru_like.pipeline import Pipeline
 
 
-def office_fixture(path, ext):
+def office_fixture(path: Path, ext: str) -> None:
     if ext == "docx":
         docx = pytest.importorskip("docx")
         document = docx.Document()
@@ -31,13 +34,13 @@ def office_fixture(path, ext):
         document.save(path)
 
 
-def package(path, entries):
+def package(path: Path, entries: Mapping[str, str | bytes]) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in entries.items():
             archive.writestr(name, data)
 
 
-def fixture(path, ext):
+def fixture(path: Path, ext: str) -> None:
     if ext in {"docx", "pptx", "xlsx"}:
         office_fixture(path, ext)
     elif ext in {"csv", "tsv"}:
@@ -111,7 +114,7 @@ def fixture(path, ext):
 async def test_native_format_real_conversion(tmp_path: Path, ext: str) -> None:
     path = tmp_path / ("sample." + ext)
     fixture(path, ext)
-    result = await Pipeline(Settings(captioning=False), None).parse(
+    result = await Pipeline(Settings(captioning=False), cast(Inference, None)).parse(
         path, path.name, "auto", "standard", tmp_path / "work"
     )
     result.validate()
@@ -134,7 +137,7 @@ async def test_docx_equation_is_preserved_or_explicitly_rejected(tmp_path: Path)
     path = tmp_path / "equation.docx"
     document.save(path)
     try:
-        result = await Pipeline(Settings(captioning=False), None).parse(
+        result = await Pipeline(Settings(captioning=False), cast(Inference, None)).parse(
             path, path.name, "auto", "standard", tmp_path / "work"
         )
     except ValueError as exc:
@@ -159,7 +162,7 @@ async def test_spreadsheet_chart_is_not_silently_dropped(tmp_path: Path) -> None
     path = tmp_path / "chart.xlsx"
     document.save(path)
     with pytest.raises(ValueError, match="(?i)chart|visual|unsupported"):
-        await Pipeline(Settings(captioning=False), None).parse(
+        await Pipeline(Settings(captioning=False), cast(Inference, None)).parse(
             path, path.name, "auto", "standard", tmp_path / "work"
         )
 
@@ -179,7 +182,9 @@ async def test_docx_embedded_image_asset_survives(tmp_path: Path) -> None:
     document.save(path)
 
     class Runtime:
-        async def infer(self, images, prompt, *, max_tokens=None):
+        async def infer(
+            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        ) -> str:
             return json.dumps(
                 [{"bbox": [0, 0, 1000, 1000], "category": "text", "content": "Red square"}]
             )
@@ -208,7 +213,7 @@ async def test_docx_structured_omml_fraction_and_scripts(tmp_path: Path) -> None
     path = tmp_path / "structured.docx"
     document.save(path)
     try:
-        result = await Pipeline(Settings(captioning=False), None).parse(
+        result = await Pipeline(Settings(captioning=False), cast(Inference, None)).parse(
             path, path.name, "auto", "standard", tmp_path / "work"
         )
     except ValueError as exc:
@@ -236,7 +241,7 @@ async def test_native_mathml_preserves_fraction_and_scripts(tmp_path: Path, ext:
         ).encode()
         package(path, entries)
     try:
-        result = await Pipeline(Settings(captioning=False), None).parse(
+        result = await Pipeline(Settings(captioning=False), cast(Inference, None)).parse(
             path, path.name, "auto", "standard", tmp_path / "work"
         )
     except ValueError as exc:
@@ -253,6 +258,6 @@ async def test_unhandled_html_mathml_is_not_silent_success(tmp_path: Path) -> No
         '<html><body><p>Equation <math xmlns="http://www.w3.org/1998/Math/MathML"><munknown><mi>x</mi></munknown></math></p></body></html>'
     )
     with pytest.raises(ValueError, match="(?i)math|visual"):
-        await Pipeline(Settings(captioning=False), None).parse(
+        await Pipeline(Settings(captioning=False), cast(Inference, None)).parse(
             path, path.name, "auto", "standard", tmp_path / "work"
         )
