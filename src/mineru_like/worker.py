@@ -1,4 +1,4 @@
-"""Single-worker scheduler for durable jobs."""
+"""Durable asynchronous jobs; inference capacity is owned by the backend."""
 
 import asyncio
 import logging
@@ -14,8 +14,7 @@ class Worker:
         self.store, self.parser, self.settings = store, parser, settings
         self.wake = asyncio.Event()
         self.task = None
-        self.current = None
-        self.current_id = None
+        self.active = {}
         self.canceling = set()
 
     def start(self):
@@ -24,66 +23,69 @@ class Worker:
         self.wake.set()
 
     async def stop(self):
-        if self.current:
-            self.current.cancel()
         if self.task:
             self.task.cancel()
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.gather(self.task, return_exceptions=True)
+        tasks = list(self.active.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.active.clear()
 
     async def cancel(self, job_id):
-        now = time.time()
         changed = self.store.execute(
             "UPDATE jobs SET status='canceled', updated=? WHERE id=? AND status='queued'",
-            (now, job_id),
+            (time.time(), job_id),
         )
-        if self.current_id == job_id and self.current and not self.current.done():
+        task = self.active.get(job_id)
+        if task and not task.done():
             self.canceling.add(job_id)
-            self.current.cancel()
             try:
-                await self.current
-            except (asyncio.CancelledError, Exception):
-                pass
-            changed = (
-                self.store.execute(
-                    "UPDATE jobs SET status='canceled', updated=? WHERE id=? AND status='running'",
-                    (time.time(), job_id),
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                changed = (
+                    self.store.execute(
+                        "UPDATE jobs SET status='canceled', updated=? WHERE id=? AND status='running'",
+                        (time.time(), job_id),
+                    )
+                    or changed
                 )
-                or changed
-            )
-            self.canceling.discard(job_id)
+            finally:
+                self.canceling.discard(job_id)
         return bool(changed)
+
+    def _finished(self, job_id, task):
+        self.active.pop(job_id, None)
+        if not task.cancelled():
+            error = task.exception()
+            if error:
+                log.error("Job task %s failed outside processing: %s", job_id, error)
 
     async def run(self):
         while True:
+            self.wake.clear()
             self.cleanup()
-            job = self.store.one(
-                "SELECT * FROM jobs WHERE status='queued' ORDER BY created, id LIMIT 1"
-            )
-            if not job:
-                self.wake.clear()
-                try:
-                    await asyncio.wait_for(self.wake.wait(), timeout=60)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-            if not self.store.execute(
-                "UPDATE jobs SET status='running', updated=? WHERE id=? AND status='queued'",
-                (time.time(), job["id"]),
-            ):
-                continue
-            self.current_id = job["id"]
-            self.current = asyncio.create_task(self.process(job))
+            with self.store.connect() as db:
+                jobs = [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT * FROM jobs WHERE status='queued' ORDER BY created, id"
+                    ).fetchall()
+                ]
+            for job in jobs:
+                if not self.store.execute(
+                    "UPDATE jobs SET status='running', updated=? WHERE id=? AND status='queued'",
+                    (time.time(), job["id"]),
+                ):
+                    continue
+                ident = job["id"]
+                task = asyncio.create_task(self.process(job), name=f"parse-{ident}")
+                self.active[ident] = task
+                task.add_done_callback(lambda done, ident=ident: self._finished(ident, done))
             try:
-                await self.current
-            except asyncio.CancelledError:
-                if asyncio.current_task().cancelling():
-                    raise
-            finally:
-                self.current = None
-                self.current_id = None
+                await asyncio.wait_for(self.wake.wait(), timeout=60)
+            except TimeoutError:
+                pass
 
     async def process(self, job):
         upload = self.store.one("SELECT * FROM uploads WHERE id=?", (job["file_id"],))

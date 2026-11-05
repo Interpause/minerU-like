@@ -191,6 +191,13 @@ def create_app(settings, parser=None, engine=None):
     async def create_job(body: JobRequest):
         if parser is None:
             raise HTTPException(503, "No parsing engine is configured")
+        warnings = []
+        if body.tier in {"auto", "flash", "basic"} and "standard" in supported_tiers:
+            requested = body.tier
+            body.tier = "standard"
+            if requested != "auto":
+                warnings.append(f"Tier {requested!r} is not implemented; using standard")
+                log.warning(warnings[-1])
         if (
             body.tier not in supported_tiers
             or body.ocr_mode not in ("auto", "ocr")
@@ -229,9 +236,6 @@ def create_app(settings, parser=None, engine=None):
                     400,
                     "Advanced verification supports PDF and image inputs; use standard for native documents",
                 )
-            count = db.execute("SELECT count(*) FROM jobs WHERE status='queued'").fetchone()[0]
-            if count >= settings.queue_size:
-                raise HTTPException(429, "Job queue is full")
             db.execute(
                 "INSERT INTO jobs (id,file_id,status,tier,ocr_mode,output_id,error,created,updated,config_json,config_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -249,7 +253,10 @@ def create_app(settings, parser=None, engine=None):
                 ),
             )
         worker.wake.set()
-        return {"job_id": ident, "status": "queued"}
+        response = {"job_id": ident, "status": "queued"}
+        if warnings:
+            response["warnings"] = warnings
+        return response
 
     @app.get("/v1/parse/jobs/{job_id}")
     async def job_status(job_id: str):

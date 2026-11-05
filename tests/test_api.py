@@ -133,27 +133,63 @@ def test_restart_recovers_queued_and_fails_running(tmp_path):
         assert wait_status(client, "queued", {"completed", "failed"})["status"] == "completed"
 
 
-def test_bounded_queue_and_failure(tmp_path):
-    async def slow(**kwargs):
-        await asyncio.sleep(60)
+def test_unbounded_jobs_overlap_and_cancellation_is_isolated(tmp_path):
+    entered = set()
+    release = threading.Event()
 
+    async def slow(**kwargs):
+        entered.add(kwargs["workdir"].name)
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return Result()
+
+    # Legacy queue_size remains readable but no longer limits accepted jobs.
     app = create_app(Settings(data_dir=tmp_path, queue_size=1), slow)
     with TestClient(app) as client:
         file_id = upload(client)
-        running = submit(client, file_id).json()["job_id"]
-        wait_status(client, running, {"running"})
-        queued = submit(client, file_id).json()["job_id"]
-        assert submit(client, file_id).status_code == 429
-        assert client.delete("/v1/parse/jobs/" + queued).json()["status"] == "canceled"
-        assert client.delete("/v1/parse/jobs/" + running).json()["status"] == "canceled"
+        jobs = [submit(client, file_id).json()["job_id"] for _ in range(12)]
+        for job in jobs:
+            wait_status(client, job, {"running"})
+        assert entered == set(jobs)
+        assert client.delete("/v1/parse/jobs/" + jobs[0]).json()["status"] == "canceled"
+        assert all(
+            client.get("/v1/parse/jobs/" + job).json()["status"] == "running" for job in jobs[1:]
+        )
+        release.set()
+        for job in jobs[1:]:
+            assert wait_status(client, job, {"completed", "failed"})["status"] == "completed"
 
+
+def test_job_failure_is_reported(tmp_path):
     async def broken(**kwargs):
         raise ValueError("bad document")
 
     with TestClient(create_app(Settings(data_dir=tmp_path), broken)) as client:
-        job = submit(client, file_id).json()["job_id"]
+        job = submit(client, upload(client)).json()["job_id"]
         status = wait_status(client, job, {"failed"})
         assert status["files"][0]["error"]["message"] == "bad document"
+
+
+@pytest.mark.parametrize("tier", ["flash", "basic", "auto"])
+def test_lower_tiers_upgrade_to_standard(tmp_path, tier):
+    seen = []
+
+    async def capture(**kwargs):
+        seen.append(kwargs["tier"])
+        return Result()
+
+    with TestClient(create_app(Settings(data_dir=tmp_path), capture)) as client:
+        response = client.post(
+            "/v1/parse/jobs",
+            json={
+                "files": [{"source": {"type": "file_id", "file_id": upload(client)}}],
+                "tier": tier,
+            },
+        )
+        assert response.status_code == 202
+        assert bool(response.json().get("warnings")) == (tier != "auto")
+        wait_status(client, response.json()["job_id"], {"completed"})
+        assert seen == ["standard"]
 
 
 def test_engine_lifecycle_and_config_snapshot(tmp_path):
