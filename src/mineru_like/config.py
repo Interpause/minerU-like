@@ -20,7 +20,7 @@ class RuntimeSettings(BaseModel):
     context_size: int = Field(32768, ge=4096)
     max_tokens: int = Field(16384, ge=256)
     parallel_slots: int = Field(4, ge=1)
-    image_min_tokens: int = Field(1024, ge=1)
+    image_min_tokens: int = Field(196, ge=1)
     image_max_tokens: int | None = Field(None, ge=-1)
     batch_size: int = Field(1024, ge=1)
     ubatch_size: int = Field(1024, ge=1)

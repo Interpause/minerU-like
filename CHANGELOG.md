@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Lower the default and example `image_min_tokens` from 1024 to 196, matching the Ovis reference examples' minimum area of 448 × 448 pixels for the supplied patch-16, merge-2 projector. Preserve explicit overrides. This changes the minimum preprocessing budget; it does not fix crop selection or establish improved transcription quality.
+
 ## 0.2.1 — 2026-11-05
 
 - Default the suite runner to repo-root `data/llm-for-zotero`, `config.local.toml` and `data/test-tools/node_modules`. Resolve cwebp through the selected application configuration, with explicit overrides and discovery still supported. The documented complete command is now `uv run --locked python scripts/run_tests.py --all`.

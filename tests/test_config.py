@@ -35,7 +35,7 @@ def test_default_data_layout_and_preserved_token_limits(
     assert settings.runtime.kv_cache == "bf16"
     assert settings.runtime.context_size == 32768
     assert settings.runtime.max_tokens == 16384
-    assert settings.runtime.image_min_tokens == 1024
+    assert settings.runtime.image_min_tokens == 196
     assert settings.runtime.parallel_slots == 4
     assert settings.runtime.batch_size == settings.runtime.ubatch_size == 1024
     assert settings.runtime.image_max_tokens is None
