@@ -13,6 +13,8 @@ cp config.example.toml config.local.toml
 
 Edit `config.local.toml` to set absolute paths to **llama-server build b12110 / commit cd959bae9**, OvisOCR3 GGUF weights, and the matching BF16 vision projector. Keep the runtime distribution's shared libraries alongside its executable. Model weights and runtime binaries are not included. Setup records the SHA-256 of your local files; startup verifies the recorded files. User-provisioned assets are supported without copying them.
 
+When compression is enabled, explicit setup also provisions the reference `cwebp` 1.6.0 encoder on Linux x86_64 if none is installed or configured. Its download URL and SHA-256 are pinned; the distribution includes its notices. Use `setup --skip-cwebp` for offline setup or configure your own encoder. Ordinary parsing never downloads tools. Without `cwebp`, lossless trials remain available and diagnostics report that named-preset lossy trials were skipped.
+
 ```sh
 uv run --locked mineru-like setup --config config.local.toml
 uv run --locked mineru-like serve --config config.local.toml
@@ -54,13 +56,52 @@ uv run --locked mineru-like download OUTPUT_FILE_ID --output result.zip
 
 Every PDF/image page receives a low-resolution visual assessment. CPU inspection supplies text visibility, raster/vector and font evidence. Clean digital prose may reuse native text. Scanned or ambiguous pages use visual transcription regardless of any OCR text layer. Math, complex layouts, small text and visual content trigger additional work. Assessment failures choose visual processing conservatively; malformed final output and unrecovered missing content fail the job. Model output is evidence, not a guarantee of exact transcription.
 
-PDF and image parsing uses PDFium/Pillow plus Ovis. Images include PNG, JPEG, WebP, GIF, BMP, TIFF and JP2; multi-frame inputs retain their frames. Native conversion uses DocVortex 0.6.13 for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV and TSV. Native equations are retained when conversion succeeds; extracted raster content receives visual enrichment. Office charts, embedded objects and other content that cannot be faithfully materialized cause explicit errors. Extracted SVG assets are rasterized for inference while retaining their originals; inline SVG in HTML/EPUB is currently rejected because its preservation through native conversion cannot be verified. LibreOffice rendering is deferred and is not a dependency.
+PDF and image parsing uses PDFium/Pillow plus Ovis. Images include PNG, JPEG, WebP, GIF, BMP, TIFF and JP2; multi-frame inputs retain their frames. Native conversion uses DocVortex 0.6.13 for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV and TSV. Native equations are retained when conversion succeeds; extracted raster content receives visual enrichment. Optional LibreOffice rendering supplies missing or questionable Office visual evidence. Extracted SVG assets are rasterized for inference while retaining their originals; inline SVG in HTML/EPUB is currently rejected because its preservation through native conversion cannot be verified.
 
 Generated regression fixtures exercise DOCX, PPTX, XLSX, RTF, ODT, ODS, ODP, EPUB, HTML variants, MHTML variants, CSV and TSV. Legacy DOC/PPT/XLS and OFD use the same native adapter but have not yet been verified with representative real files. Complex Office drawing fidelity, severe camera perspective, dense tiny mathematics and unusual nested objects need further corpus validation. Source-object inventory checks are conservative safeguards rather than proof of complete conversion.
 
 The plugin sends tier and OCR mode. Its legacy effort and image-analysis controls are not transmitted on this API. Server configuration controls captioning, table reconstruction, image limits and resource budgets. The plugin's independent 200-page upload chunks remain independent jobs; tables crossing that boundary stay as fragments.
 
-**Standard** chooses effort automatically. **Advanced**, for PDF and image inputs, adds an independent Markdown pass and checks text, numerals, formulas and table cells against the structured result. It attempts bounded region recovery and fails unresolved disagreements explicitly. Cross-page reconstruction retains original page fragments and accepts a merged Markdown table only when source cells are preserved exactly. Longer table runs rebuild from right to left, rendering accepted intermediate content before the next pair. Ambiguous or unsupported merges remain separate. Native document formats support Standard; requesting Advanced for them returns an explicit error.
+| Runtime behavior | Standard | Advanced |
+| --- | --- | --- |
+| Brief visual assessment | Every visual page | Every visual page |
+| Extraction source render | 200 DPI, at most 2880px long edge | 300 DPI, at most 4096px long edge |
+| Dedicated formula recognition | Small or suspicious formulas; otherwise reuse extraction | Every identified inline/display formula |
+| Model-based verification | Suspicious regions only | Independent full-page Markdown plus targeted disagreement recovery |
+| Cross-page tables | Adjacent candidate pairs | Recursive longer runs, rendering accepted intermediate content |
+| Meaningful figure descriptions | Enabled | Enabled |
+| Source SVG recovery and compression | Enabled | Enabled |
+
+Both tiers keep the same model image-token/context limits. Higher-resolution source-region crops protect small text where whole-page preprocessing would discard detail. Advanced's independent pass is a separate generation from the same model, not an independent ground truth. Unresolved material disagreements fail explicitly. Cross-page reconstruction retains source fragments and requires exact source-cell preservation; ambiguous or unsupported merges remain separate. Native documents continue to support Standard only.
+
+### Headless LibreOffice
+
+`[libreoffice] mode = "auto"` detects a system executable first, then an installed Flatpak. Select `system` or `flatpak` explicitly to control the backend, or `off` to disable it. For a Flatpak installation:
+
+```toml
+[libreoffice]
+mode = "flatpak"
+flatpak_app_id = "org.libreoffice.LibreOffice"
+```
+
+Python manages headless subprocesses with private profiles and staged input copies. Flatpak receives per-launch work-directory access; no permanent overrides are applied. Timeout/cancellation targets only the owned instance ID, preserving existing desktop sessions. No UNO-enabled Python or manually managed daemon is needed.
+
+Source charts, grouped/floating objects, missing assets/equations, broken conversion and unusually sparse output trigger visual recovery. Ordinary native tables and complete spreadsheet cells remain native. Renderer pages are associated through text anchors where possible; unmatched evidence becomes a labeled visual supplement. Spreadsheet export bypasses print ranges, and oversized sheets are processed in bounded overlapping regions. Rendering cannot substitute for failed native cell extraction. Recovery counts and anchors are safeguards, not proof of source-object identity.
+
+```sh
+uv run --locked mineru-like doctor --config config.local.toml
+uv run --locked mineru-like doctor --config config.local.toml --smoke sample.docx
+```
+
+The smoke command explicitly performs a conversion and reports its output path. Flatpak execution may require running this check on the deployment host; mocked command/lifecycle tests do not establish that the host installation works.
+
+### Delivery assets
+
+Source vector figures are exported through PyMuPDF with text retained as text, including common fonts. The exporter removes unrelated objects/resources and compares candidates against independent PDFium renders on white and black backgrounds. Uncertain fonts, geometry, clipping or isolation retain the raster. Scans are never traced into vectors. An isolated embedded raster can retain its original compressed bytes when its footprint and independent rendering agree.
+
+After inference, static referenced raster assets compete against optimized PNG, lossless WebP and lossy WebP at qualities 95/90/85/80, without resizing. Existing classifications select `photo`, `drawing`, `text`, `icon` or `default` encoder presets; CPU heuristics handle missing classifications. No model call is added solely to choose a preset or validate compression. Select the smallest accepted candidate only when it saves at least 10% against the original asset bytes. Animation retains its frames/timing unchanged.
+
+CPU checks preserve dimensions, orientation, transparency and color handling, and compare global/local similarity and signed edges. Defaults require global SSIM 0.995, minimum 32px-tile SSIM 0.98 and edge preservation 0.995. These conservative regression-tested thresholds reduce risk; they cannot prove scientific/semantic equivalence. Original-quality evidence remains available to inference. Asset filename changes update Markdown, HTML image references and structured image fields together; unresolved references prevent publication.
 
 ## Operation and resources
 
@@ -80,6 +121,8 @@ uv run --locked ruff check src tests
 uv build
 ```
 
-The opt-in integration harness in `tests/integration/` loads an unchanged plugin checkout. Set `TEST_PLUGIN_ROOT`, `TYPESCRIPT_MODULE` (its TypeScript compiler module), and `FFLATE_MODULE` (its ZIP dependency module), and use Node 26. The default integration test injects a test parser; the harness also accepts a real running service and PDF through environment variables documented in its source. Real CPU checks have exercised managed inference and the unchanged plugin's upload/download/result-normalization path. A live Zotero GUI/cache session and measured 6 GB GPU peaks remain unverified.
+The opt-in integration harness in `tests/integration/` loads an unchanged plugin checkout. Set `TEST_PLUGIN_ROOT`, `TYPESCRIPT_MODULE` (its TypeScript compiler module), and `FFLATE_MODULE` (its ZIP dependency module), and use Node 26. The default integration test injects a test parser; the harness also accepts a real running service and PDF through environment variables documented in its source. Real CPU checks have exercised managed inference and the unchanged plugin's upload/download/result-normalization path. Set `MINERU_TEST_CWEBP` to a local encoder path for real preset tests, and `MINERU_LIKE_TEST_FLATPAK=1` for the installed Flatpak conversion smoke. A live Zotero GUI/cache session and measured 6 GB GPU peaks remain unverified.
+
+Runtime diagnostics distinguish model-call purpose/count/duration from `source_assets_cpu` and `compression_cpu` checks. The regression suite runs offline from the service: it is never executed during a parse.
 
 Third-party prompt and dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

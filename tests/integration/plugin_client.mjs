@@ -38,8 +38,9 @@ const content = JSON.parse(new TextDecoder().decode(result.files.find(f => f.rel
 if (!realPdf) {
   assert.equal(content[0].text, 'Fixture title');
   assert.equal(content[0].text_level, 1);
-  assert.equal(content[1].img_path, 'images/figure.png');
-  assert.ok(result.files.some(f => f.relativePath === 'images/figure.png'));
+  const image = process.env.TEST_EXPECTED_ASSET || 'images/figure.png';
+  assert.equal(content[1].img_path, image);
+  assert.ok(result.files.some(f => f.relativePath === image));
 } else {
   assert.ok(content.length > 0);
   if (process.env.TEST_OUTPUT) writeFileSync(process.env.TEST_OUTPUT, JSON.stringify({service, pageCount: result.pageCount, markdown: result.mdContent, content, files: result.files.map(f => f.relativePath), reports}, null, 2));

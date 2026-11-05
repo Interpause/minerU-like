@@ -137,7 +137,6 @@ class LibreOfficeRenderer:
                 args = [
                     found["binary"],
                     "run",
-                    "--command=soffice",
                     "--die-with-parent",
                     f"--instance-id-fd={write_fd}",
                     f"--filesystem={job}",

@@ -1,6 +1,7 @@
 """Opt-in integration with an unchanged checkout of the plugin client."""
 
 import asyncio
+import hashlib
 import os
 import shutil
 import socket
@@ -8,14 +9,17 @@ from pathlib import Path
 
 import pytest
 import uvicorn
+from PIL import Image
 
 from mineru_like.api import create_app
 from mineru_like.config import Settings
+from mineru_like.processor import finalize_asset_names
 from mineru_like.result import Block, DocumentResult, Page
 
 
 @pytest.mark.asyncio
-async def test_plugin_client_lifecycle(tmp_path):
+@pytest.mark.parametrize("asset_format", ["png", "webp", "svg"])
+async def test_plugin_client_lifecycle(tmp_path, asset_format):
     plugin = os.environ.get("TEST_PLUGIN_ROOT")
     fflate = os.environ.get("FFLATE_MODULE")
     typescript = os.environ.get("TYPESCRIPT_MODULE")
@@ -23,24 +27,32 @@ async def test_plugin_client_lifecycle(tmp_path):
         pytest.skip(
             "Set TEST_PLUGIN_ROOT, FFLATE_MODULE, TYPESCRIPT_MODULE and install Node 26 to run this integration test"
         )
-    asset = tmp_path / "figure.png"
-    asset.write_bytes(b"fixture-image")
+    asset = tmp_path / f"figure.{asset_format}"
+    if asset_format == "svg":
+        asset.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="red"/></svg>'
+        )
+    else:
+        Image.new("RGB", (20, 20), "red").save(asset)
+    expected = f"images/{hashlib.sha256(asset.read_bytes()).hexdigest()}.{asset_format}"
 
     async def parser(*, input_path, filename, ocr_mode, tier, workdir):
         assert input_path.read_bytes() == b"%PDF-test-fixture"
         assert filename == "fixture.pdf" and ocr_mode == "auto" and tier == "standard"
-        return DocumentResult(
+        result = DocumentResult(
             pages=[
                 Page(
                     0,
                     [
                         Block("doc_title", "Fixture title"),
-                        Block("image", "", image_source="images/figure.png"),
+                        Block("image", "", image_source=f"images/figure.{asset_format}"),
                     ],
                 )
             ],
-            assets={"images/figure.png": asset},
+            assets={f"images/figure.{asset_format}": asset},
         )
+        finalize_asset_names(result)
+        return result
 
     app = create_app(
         Settings(data_dir=tmp_path / "service", api_key="integration-key"), parser=parser
@@ -60,7 +72,9 @@ async def test_plugin_client_lifecycle(tmp_path):
             await asyncio.sleep(0.01)
         else:
             pytest.fail("Server startup timed out")
-        env = dict(os.environ, TEST_BASE_URL=f"http://127.0.0.1:{port}")
+        env = dict(
+            os.environ, TEST_BASE_URL=f"http://127.0.0.1:{port}", TEST_EXPECTED_ASSET=expected
+        )
         proc = await asyncio.create_subprocess_exec(
             "node",
             str(Path(__file__).with_name("plugin_client.mjs")),

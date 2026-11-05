@@ -70,7 +70,10 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(tmp_path, monke
             with Image.open(images[0]) as image:
                 assert image.format == "PNG"
                 assert image.getpixel((0, 0)) == (0, 0, 0)
-            return '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"}]'
+            return (
+                '[{"bbox":[0,0,1000,1000],"category":"display_formula","content":"x+y"},'
+                '{"bbox":[0,0,1000,1000],"category":"chart","content":"chart"}]'
+            )
 
     source = tmp_path / "sample.html"
     source.write_text("<html></html>")
@@ -78,6 +81,7 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(tmp_path, monke
         source, source.name, "auto", "standard", tmp_path / "out"
     )
     assert result.assets["images/shape.svg"].read_bytes() == svg
+    assert result.pages[0].blocks[0].metadata["asset_type"] == "drawing"
     assert any(block.content == "x+y" for block in result.pages[0].blocks)
 
 

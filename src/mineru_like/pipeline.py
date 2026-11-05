@@ -338,7 +338,21 @@ def _risky_formula(content, box, image_size):
 
 def _figure_kind(item):
     kind = item.get("figure_kind", item.get("asset_type", "unknown"))
-    return kind if kind in {"photo", "drawing", "text", "icon", "mixed", "unknown"} else "unknown"
+    if kind in {"photo", "drawing", "text", "icon", "mixed"}:
+        return kind
+    if item.get("category") == "chart":
+        return "drawing"
+    # Existing descriptions are advisory encoder hints, not another model task.
+    description = item.get("content", "").casefold()
+    for pattern, value in (
+        (r"\b(?:text-heavy|screenshot|text document)\b", "text"),
+        (r"\b(?:diagram|flowchart|line drawing|bar chart|line chart|scatter plot)\b", "drawing"),
+        (r"\b(?:photograph|photo)\b", "photo"),
+        (r"\b(?:logo|icon)\b", "icon"),
+    ):
+        if re.search(pattern, description):
+            return value
+    return "unknown"
 
 
 class Pipeline:
@@ -921,6 +935,8 @@ class Pipeline:
                     if union and intersection / union > 0.5:
                         candidates.append(item)
                 if len(candidates) == 1:
+                    if block.metadata.get("asset_type", "unknown") == "unknown":
+                        block.metadata["asset_type"] = _figure_kind(candidates[0])
                     match = re.search(
                         r"<caption>(.*?)</caption>", candidates[0]["content"], re.I | re.S
                     )

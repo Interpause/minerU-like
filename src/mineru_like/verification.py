@@ -283,6 +283,10 @@ async def verify_small_text_regions(
         "paragraph_title",
         "footnote",
         "vision_footnote",
+        "header",
+        "footer",
+        "number",
+        "formula_number",
     }
     for index, box in enumerate(regions):
         overlapping = [
@@ -301,7 +305,17 @@ async def verify_small_text_regions(
                 and item["bbox"][1] < box[3]
                 and item["bbox"][3] > box[1]
                 for item in input_items
-                if item["category"] in {"table", "display_formula", "inline_formula"}
+                if item["category"]
+                in {
+                    "table",
+                    "display_formula",
+                    "inline_formula",
+                    "image",
+                    "chart",
+                    "header_image",
+                    "footer_image",
+                    "seal",
+                }
             )
             if covered:
                 continue
@@ -333,7 +347,9 @@ async def verify_small_text_regions(
             "small_text_region",
             None,
         )
-        evidence = _tokens(" ".join(item["content"] for item in result))
+        evidence = _tokens(
+            " ".join(item["content"] for item in result if item["category"] in allowed)
+        )
         extracted = _tokens(" ".join(item["content"] for item in overlapping))
         missing = evidence - extracted
         total = max(sum(evidence.values()), 1)
@@ -347,6 +363,7 @@ async def verify_small_text_regions(
                     "stage": "small_text_verification",
                     "status": "unresolved",
                     "region": index,
+                    "missing_tokens": dict(missing.most_common(20)),
                 }
             )
             raise VerificationError("Small-text region disagrees with page extraction")

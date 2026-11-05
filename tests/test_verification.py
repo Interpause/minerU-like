@@ -6,6 +6,37 @@ from mineru_like.result import Block, Page
 from mineru_like.verification import VerificationError, verify_page
 
 
+@pytest.mark.asyncio
+async def test_small_text_comparison_includes_matching_header_numbers(tmp_path):
+    import json
+
+    from mineru_like.config import Settings
+    from mineru_like.pipeline import Pipeline
+    from mineru_like.verification import verify_small_text_regions
+
+    items = [
+        {"category": "header", "bbox": [0, 0, 1000, 100], "content": "Journal 310 (2005) 253–265"},
+        {"category": "text", "bbox": [0, 120, 1000, 900], "content": "Small text body"},
+    ]
+
+    class Runtime:
+        async def infer(self, images, prompt, *, max_tokens):
+            return json.dumps(items)
+
+    diagnostics = []
+    await verify_small_text_regions(
+        Pipeline(Settings(), Runtime()),
+        0,
+        input_items=items,
+        regions=[[0, 0, 1000, 1000]],
+        pdf_path=None,
+        image=Image.new("RGB", (200, 200), "white"),
+        workdir=tmp_path,
+        diagnostics=diagnostics,
+    )
+    assert diagnostics[-1]["status"] == "agreed"
+
+
 class Pipeline:
     def __init__(self, markdown, region=None):
         self.markdown, self.region = markdown, region

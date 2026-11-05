@@ -6,10 +6,11 @@ import asyncio
 import base64
 import hashlib
 import html
-import json
 import re
+import time
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -147,6 +148,38 @@ def _inline(value):
             text = f"[{text}]({item['url']})"
         output.append(text)
     return "".join(output)
+
+
+def _normalized_formula(value):
+    text = _inline(value).strip()
+    for opening, closing in (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$")):
+        if (
+            text.startswith(opening)
+            and text.endswith(closing)
+            and len(text) >= len(opening) + len(closing)
+        ):
+            text = text[len(opening) : -len(closing)].strip()
+            break
+    return " ".join(text.split())
+
+
+def _native_formula_counts(value):
+    counts = Counter()
+
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") in {"equation", "equation_inline"}:
+                formula = _normalized_formula(node.get("content", ""))
+                if formula:
+                    counts[formula] += 1
+            for child in node.values():
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return counts
 
 
 def _nested(value, depth=0):
@@ -303,9 +336,14 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
         settings = getattr(pipeline.settings, "libreoffice", None)
         if settings is None or pipeline.runtime is None:
             raise ValueError("Native conversion failed; visual recovery is unavailable")
+        conversion_start = time.monotonic()
         pdf = await LibreOfficeRenderer(settings).convert(path, ext, workdir)
+        conversion_elapsed = time.monotonic() - conversion_start
         fallback = await pipeline.parse(
             pdf, "rendered.pdf", "ocr", "standard", workdir / "libreoffice-fallback"
+        )
+        fallback.diagnostics.append(
+            {"stage": "libreoffice_conversion", "elapsed_seconds": conversion_elapsed}
         )
         for page in fallback.pages:
             page.metadata.update(
@@ -358,9 +396,8 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
             "Native spreadsheet conversion is sparse; cell completeness cannot be guaranteed"
         )
     needs_visual |= sparse
-    recovered_math = len(
-        re.findall(r'"type":\s*"(?:equation|equation_inline)"', json.dumps(document))
-    )
+    native_formulas = _native_formula_counts(document)
+    recovered_math = sum(native_formulas.values())
     needs_visual |= source_math > recovered_math
     pages, assets = [], {}
     for name, payload in result.assets.items():
@@ -467,7 +504,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
         raise ValueError("Invalid native document page count")
     from PIL import Image
 
-    from .pipeline import IMAGES, PROMPTS, _ink_outside, _structured
+    from .pipeline import IMAGES, PROMPTS, _figure_kind, _ink_outside, _structured
 
     for page in pages:
         enriched = []
@@ -505,6 +542,12 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                     page.page_idx,
                     "native_visual_transcription",
                 )
+                figure_kinds = {
+                    _figure_kind(region) for region in visual if region["category"] in IMAGES
+                }
+                figure_kinds.discard("unknown")
+                if len(figure_kinds) == 1:
+                    block.metadata["asset_type"] = figure_kinds.pop()
                 for region in visual:
                     category = region["category"]
                     if category in IMAGES or not region["content"].strip():
@@ -536,6 +579,10 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                 candidates = [item for item in captions if item["category"] in IMAGES]
                 if len(candidates) != 1:
                     raise ValueError("Native image caption could not be matched unambiguously")
+                if block.metadata.get("asset_type", "unknown") == "unknown":
+                    kind = _figure_kind(candidates[0])
+                    if kind != "unknown":
+                        block.metadata["asset_type"] = kind
                 match = re.search(
                     r"<caption>(.*?)</caption>", candidates[0]["content"], re.I | re.S
                 )
@@ -563,7 +610,14 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
         if settings is None:
             raise ValueError("Unsupported source content: visual rendering is unavailable")
         renderer = LibreOfficeRenderer(settings)
+        conversion_start = time.monotonic()
         pdf = await renderer.convert(path, ext, workdir)
+        diagnostics.append(
+            {
+                "stage": "libreoffice_conversion",
+                "elapsed_seconds": time.monotonic() - conversion_start,
+            }
+        )
         visual_dir = workdir / "libreoffice-visual"
         if ext in {"xls", "xlsx", "ods", "csv", "tsv"}:
             regions = await asyncio.to_thread(
@@ -642,6 +696,11 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
             for block in rendered_page.blocks:
                 if block.type not in selected_types:
                     continue
+                if block.type in {"equation", "display_formula", "inline_formula"}:
+                    formula = _normalized_formula(block.content)
+                    if formula and native_formulas[formula]:
+                        native_formulas[formula] -= 1
+                        continue
                 if block.type in {"text", "paragraph_title", "doc_title"} and (
                     not block.content.strip() or block.content.strip().casefold() in native_text
                 ):

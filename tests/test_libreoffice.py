@@ -68,7 +68,8 @@ async def test_flatpak_uses_instance_scoped_and_job_options(tmp_path, monkeypatc
     await renderer.convert(source, "pptx", tmp_path / "work")
     args = commands[-1]
     assert "--die-with-parent" in args
-    assert "--command=soffice" in args
+    # Use the installed app's published entry point (Flathub declares libreoffice).
+    assert not any(a.startswith("--command=") for a in args)
     assert any(a.startswith("--instance-id-fd=") for a in args)
     assert any(a.startswith("--filesystem=") for a in args)
 
@@ -297,6 +298,7 @@ async def test_native_chart_without_body_uses_visual_supplement(tmp_path, monkey
                     {
                         "blocks": [
                             {"type": "text", "content": "Native text"},
+                            {"type": "equation", "content": "x + y"},
                             {"type": "chart", "content": []},
                         ]
                     }
@@ -315,7 +317,13 @@ async def test_native_chart_without_body_uses_visual_supplement(tmp_path, monkey
     async def parse(*args):
         return DocumentResult(
             pages=[
-                Page(page_idx=0, blocks=[Block(type="chart", content="", image_source="chart.png")])
+                Page(
+                    page_idx=0,
+                    blocks=[
+                        Block(type="chart", content="", image_source="chart.png"),
+                        Block(type="display_formula", content="$$ x  + y $$"),
+                    ],
+                )
             ],
             assets={"chart.png": image},
         )
@@ -328,4 +336,16 @@ async def test_native_chart_without_body_uses_visual_supplement(tmp_path, monkey
     result = await parse_native(source, "pptx", workdir, pipeline)
     assert result.pages[0].blocks[0].content == "Native text"
     assert result.pages[-1].blocks[-1].type == "chart"
+    assert (
+        sum(
+            block.type in {"equation", "display_formula", "inline_formula"}
+            for page in result.pages
+            for block in page.blocks
+        )
+        == 1
+    )
+    assert any(
+        d.get("stage") == "libreoffice_conversion" and d["elapsed_seconds"] >= 0
+        for d in result.diagnostics
+    )
     assert any(d.get("code") == "native_visual_missing" for d in result.diagnostics)

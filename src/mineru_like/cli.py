@@ -1,6 +1,7 @@
 """Command-line lifecycle and direct document submission."""
 
 import argparse
+import asyncio
 import json
 import logging
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from .assets import download_asset, register_assets, verify_assets
+from .assets import download_asset, installed_cwebp, provision_cwebp, register_assets, verify_assets
 from .config import load_settings
 
 
@@ -101,6 +102,19 @@ def main():
             cmd.add_argument("--device", choices=["auto", "cpu", "cuda"])
             cmd.add_argument("--host")
             cmd.add_argument("--port", type=int)
+        else:
+            cmd.add_argument(
+                "--skip-cwebp",
+                action="store_true",
+                help="Use an existing encoder or retain lossless-only optimization",
+            )
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--config", type=Path, required=True)
+    doctor.add_argument(
+        "--smoke",
+        type=Path,
+        help="Explicitly convert this Office file to test the configured renderer",
+    )
     fetch = commands.add_parser("download-asset")
     fetch.add_argument("--url", required=True)
     fetch.add_argument("--sha256", required=True)
@@ -126,6 +140,30 @@ def main():
     try:
         if args.command == "download-asset":
             download_asset(args.url, args.sha256, args.output)
+        elif args.command == "doctor":
+            from .libreoffice import LibreOfficeRenderer
+
+            settings = load_settings(args.config)
+
+            async def diagnose():
+                renderer = LibreOfficeRenderer(settings.libreoffice)
+                report = {
+                    "libreoffice": await renderer.probe(),
+                    "cwebp": str(
+                        settings.compression.cwebp_binary
+                        or installed_cwebp(settings.data_dir)
+                        or "unavailable"
+                    ),
+                }
+                if args.smoke:
+                    report["smoke_pdf"] = str(
+                        await renderer.convert(
+                            args.smoke, args.smoke.suffix, settings.data_dir / "doctor"
+                        )
+                    )
+                return report
+
+            print(json.dumps(asyncio.run(diagnose()), indent=2))
         elif args.command in {"serve", "setup"}:
             settings = load_settings(args.config)
             if args.command == "setup":
@@ -133,6 +171,8 @@ def main():
                     print("External inference configured; its operator provisions assets.")
                 else:
                     print(register_assets(settings))
+                if settings.compression.enabled and not args.skip_cwebp:
+                    print(settings.compression.cwebp_binary or provision_cwebp(settings.data_dir))
                 return
             if args.device:
                 settings.runtime.device = args.device
@@ -144,11 +184,11 @@ def main():
             import uvicorn
 
             from .api import create_app
-            from .pipeline import Pipeline
+            from .processor import DocumentProcessor
             from .runtime import InferenceRuntime
 
             runtime = InferenceRuntime(settings.runtime)
-            pipeline = Pipeline(settings, runtime)
+            pipeline = DocumentProcessor(settings, runtime)
             uvicorn.run(
                 create_app(settings, parser=pipeline.parse, engine=runtime),
                 host=settings.host,

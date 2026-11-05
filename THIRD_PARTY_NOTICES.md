@@ -9,3 +9,7 @@ Managed inference targets [llama.cpp build b12110](https://github.com/ggml-org/l
 [DocVortex 0.6.13](https://pypi.org/project/docvortex/0.6.13/) declares `MIT AND Apache-2.0 AND BSD-3-Clause`; its wheel contains notices for bundled components. Python dependencies and transitive dependencies retain their individual licenses. The lockfile records the resolved distributions and hashes; review their installed license files for redistribution.
 
 The Zotero compatibility interface was inspected from llm-for-zotero 3.9.16. Plugin implementation files are not distributed by this project; optional integration tests load the user's unchanged checkout.
+
+PDF vector export uses [PyMuPDF](https://pymupdf.readthedocs.io/en/latest/about.html), distributed under AGPL-3.0 or a commercial Artifex license. SVG path geometry uses [svgelements](https://github.com/meerk40t/svgelements), MIT licensed. Their distributions retain their own notices.
+
+Optional setup provisions Google's [libwebp](https://developers.google.com/speed/webp) reference `cwebp` tool, version 1.6.0, under its BSD-style license and patent grant. The complete downloaded distribution, including its notices, stays with the runtime assets. LibreOffice and Flatpak are externally installed tools and are not redistributed by this package.

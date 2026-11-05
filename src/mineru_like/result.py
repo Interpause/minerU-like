@@ -9,6 +9,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
 
+def image_references(text: str):
+    """Yield local image destinations from the two delivered markup formats."""
+    markdown = re.findall(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
+    html = re.findall(r"<img\b[^>]*\bsrc\s*=\s*[\"\x27]([^\"\x27]+)[\"\x27]", text, re.I)
+    for value in [a or b for a, b in markdown] + html:
+        if not re.match(r"^(?:https?:|data:|#)", value, re.I):
+            yield value.removeprefix("./")
+
+
 @dataclass
 class Block:
     type: str
@@ -101,6 +110,14 @@ class DocumentResult:
                     raise ValueError("Title level must be a positive integer")
                 if not all(isinstance(s, str) for s in block.captions + block.footnotes):
                     raise ValueError("Caption/footnote content must be strings")
+        texts = [self.markdown()]
+        for page in self.pages:
+            for block in page.blocks:
+                texts.extend([block.content, *block.captions, *block.footnotes])
+        for text in texts:
+            for reference in image_references(text):
+                if reference not in self.assets:
+                    raise ValueError(f"Missing markup image asset: {reference}")
 
     def markdown(self) -> str:
         if self.markdown_override is not None:

@@ -9,6 +9,17 @@ from mineru_like.config import Settings
 from mineru_like.pipeline import Pipeline
 
 
+def test_existing_ovis_classifications_supply_encoder_hints():
+    from mineru_like.pipeline import _figure_kind
+
+    assert _figure_kind({"category": "chart", "content": "<img/>"}) == "drawing"
+    assert (
+        _figure_kind({"category": "image", "content": "<caption>A photograph of a tree.</caption>"})
+        == "photo"
+    )
+    assert _figure_kind({"category": "image", "content": "<img/>"}) == "unknown"
+
+
 class Runtime:
     def __init__(self, replies):
         self.replies = iter(replies)

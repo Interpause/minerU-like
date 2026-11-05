@@ -4,6 +4,27 @@ host = "127.0.0.1"
 port = 8000
 captioning = true
 cross_page_tables = true
+render_dpi = 200
+max_image_side = 2880
+advanced_render_dpi = 300
+advanced_max_image_side = 4096
+
+[libreoffice]
+mode = "auto" # off, auto, system, flatpak
+# Select your Flatpak explicitly with mode = "flatpak".
+flatpak_app_id = "org.libreoffice.LibreOffice"
+timeout = 120
+
+[compression]
+enabled = true
+min_savings = 0.10
+qualities = [95, 90, 85, 80]
+method = 6
+# cwebp_binary = "/absolute/path/to/cwebp"
+# preset_overrides = {drawing = "drawing", photo = "photo", text = "text"}
+
+[svg]
+enabled = true
 
 [runtime]
 mode = "managed"

@@ -3,10 +3,54 @@
 import hashlib
 import json
 import os
+import platform
+import shutil
+import tarfile
 import tempfile
 from pathlib import Path
 
 import httpx
+
+CWEBP_VERSION = "1.6.0"
+CWEBP_DIRECTORY = "libwebp-1.6.0-linux-x86-64"
+CWEBP_URL = (
+    "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/"
+    + CWEBP_DIRECTORY
+    + ".tar.gz"
+)
+CWEBP_SHA256 = "1c5ffab71efecefa0e3c23516c3a3a1dccb45cc310ae1095c6f14ae268e38067"
+
+
+def installed_cwebp(data_dir: Path) -> Path | None:
+    system = shutil.which("cwebp")
+    if system:
+        return Path(system)
+    provisioned = Path(data_dir) / "tools" / CWEBP_DIRECTORY / "bin" / "cwebp"
+    return provisioned if provisioned.is_file() else None
+
+
+def provision_cwebp(data_dir: Path) -> Path:
+    """Explicit setup download of the pinned reference encoder and its notices."""
+    existing = installed_cwebp(data_dir)
+    if existing:
+        return existing
+    if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
+        raise ValueError(
+            "Automatic cwebp provisioning supports Linux x86_64; configure a local encoder"
+        )
+    target = Path(data_dir) / "tools"
+    target.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=target, prefix="webp-setup-") as staging:
+        root = Path(staging)
+        archive = root / "runtime.tar.gz"
+        download_asset(CWEBP_URL, CWEBP_SHA256, archive)
+        with tarfile.open(archive, "r:gz") as distribution:
+            distribution.extractall(root, filter="data")
+        runtime = root / CWEBP_DIRECTORY
+        if not (runtime / "bin" / "cwebp").is_file():
+            raise ValueError("Invalid cwebp distribution")
+        runtime.rename(target / CWEBP_DIRECTORY)
+    return target / CWEBP_DIRECTORY / "bin" / "cwebp"
 
 
 def sha256(path: Path) -> str:
