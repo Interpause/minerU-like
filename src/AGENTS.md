@@ -6,9 +6,9 @@ This file supplements the [root guidance](../AGENTS.md) for `src/`.
 
 - Favor cohesive modules, descriptive names, explicit contracts and focused
   helpers. Extract code for clarity or reuse, not to build a speculative framework.
-- Annotate new or changed public interfaces and shared data contracts. Type
-  internal helpers where useful; do not expand a focused change into a repository
-  typing migration. Follow the Python constraints and Ruff settings in
+- Maintain comprehensive annotations in source, tests and scripts. Use shared
+  protocols for cross-module contracts and local `Any` escapes where necessary;
+  the advisory type checker is not a strict gate or a diagnostic quota. Follow the Python constraints and Ruff settings in
   [pyproject.toml](../pyproject.toml).
 - Prefer minimal comments. Explain surprising constraints when names and structure
   cannot carry the reasoning; avoid narrating obvious code or duplicating types.
@@ -61,6 +61,6 @@ and omissions rather than treating one wrapper as universal authority.
   controls are a separate concern; do not silently add a job-count admission cap
   or inference serialization as a performance fix.
 
-Consult [README.md](../README.md) for current parsing policy and
+Consult [parsing guide](../docs/PARSING.md) for current parsing policy and
 [TODO.md](../TODO.md) for known limitations. Keep guidance outside
 `src/mineru_like/` so agent instructions are not shipped in the Python package.

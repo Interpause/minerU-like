@@ -4,6 +4,10 @@ This file supplements the [root guidance](../AGENTS.md) for `tests/`.
 Setup, prerequisites and copyable commands belong in
 [the testing guide](../docs/TESTING.md), not duplicated here.
 
+Maintain comprehensive test annotations, using shared protocols where useful and
+local `Any` escapes when needed. The separate advisory type check and its scope
+are described in [development](../docs/DEVELOPMENT.md).
+
 ## Design meaningful checks
 
 - Choose verification according to the risk and reach of the change. Focused tests,
