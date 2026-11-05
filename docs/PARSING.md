@@ -48,7 +48,7 @@ The smoke command explicitly performs a conversion and reports its output path. 
 
 ### Delivery assets
 
-Equation crops are temporary inference inputs: recognized LaTeX belongs at the original inline or display position. Delivered image assets represent actual graphics, not recovery crops. A graphic can be replaced with an HTML table when structural checks find complete matching table evidence. These checks are heuristics, not independent proof of semantic equivalence.
+Equation crops are temporary inference inputs: recognized LaTeX belongs at the original inline or display position. Delivered image assets represent actual graphics, not recovery crops. A graphic can be replaced with an HTML table when structural checks find complete matching table evidence. Embedded native graphics require matching structured and Markdown readings before semantic replacement; disagreement retains the source graphic. These same-model and ink-coverage checks are heuristics, not independent proof of semantic equivalence.
 
 Source vector figures are exported through PyMuPDF with text retained as text, including common fonts. The exporter removes unrelated objects/resources and compares candidates against independent PDFium renders on white and black backgrounds. Uncertain fonts, geometry, clipping or isolation retain the raster. Scans are never traced into vectors. An isolated embedded raster can retain its original compressed bytes when its footprint and independent rendering agree.
 

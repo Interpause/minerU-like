@@ -1,8 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-06
 
-- Lower the default and example `image_min_tokens` from 1024 to 196, matching the Ovis reference examples' minimum area of 448 × 448 pixels for the supplied patch-16, merge-2 projector. Preserve explicit overrides. This changes the minimum preprocessing budget; it does not fix crop selection or establish improved transcription quality.
+### Visual inference and localized recovery
+
+- Make Standard normally one structured full-page request per nonblank PDF/image page. Remove routine low-resolution layout and small-text quadrant passes. Advanced adds one independent full-page Markdown reading and recovers only disputed or otherwise suspicious regions; same-model agreement is not independent ground truth.
+- Send task-specific JSON schemas directly for structured, layout, caption and related-page table tasks. Preserve all 18 official prompts. Keep raw formula transcription unconstrained, thinking disabled and greedy decoding with neutral repetition/presence/frequency penalties.
+- Lower the default/example minimum image budget to 196 tokens, matching the reference 448 × 448 minimum for the supplied patch-16, merge-2 projector. Preserve explicit overrides. Warn that an 8192-token maximum can downscale Advanced source images; image area and DPI are different units.
+- Estimate managed preprocessing dimensions from actual image sizes and explicit token limits. Sum actual estimated image-token demand for context checks; mark unknown backend geometry explicitly. Use post-resize glyph size plus expected crop gain for localized risk hints, never native PDF strings as equation truth.
+- Recover from original PDF/image regions using bounded pixel padding and neighboring-line guards, with at most two distinct views per region and no identical retries. Normalize harmless math presentation differences while preserving mathematical structure, case and command-token boundaries.
+- Embed recovered LaTeX in its inline/display position. Keep equation crops transient. Preserve raw candidates and recovery provenance in diagnostics without repeated uncertainty labels or alternate paragraphs; genuinely unreadable content receives a concise general location/zoom placeholder.
+- Replace actual graphics only with corroborated complete structural content. Match table rows/cells/spans and retain the source on disagreement; native image replacement also requires a matching independent Markdown reading. These checks remain heuristics. Preserve original captions/footnotes and graphics not replaced.
+- Cover real inference metadata serialization, faint content, narrow crops, localized verification, schema contracts, source geometry, semantic replacement, cancellation and concurrent page ordering. Update parsing/configuration/architecture/testing guidance and distinguish implemented behavior from pending deployment evidence.
+
+### Verification
+
+- Python 3.12 integrated suite with real cwebp and live CPU inference: **226 passed, 16 skipped**. Python 3.13 and 3.14 ordinary suites: **222 passed, 20 skipped** each. Ruff lint/format, advisory ty, CLI help, documentation file links and source/wheel builds pass. Release wheels include 18 prompts, notices and `py.typed`, excluding private assets and agent instructions. Two pre-existing Pillow deprecation warnings remain.
+- A four-page mathematical PDF completed Standard on the BF16 model/projector with two CPU slots and an 8192-token image ceiling in **285.2 seconds**, using four calls and producing no image assets or unreadable placeholders. A direct source equation crop returned one LaTeX expression in **3.7 seconds** with the 196-token floor and no grammar constraint.
+- Eight actual Advanced full-page readings were retained while comparison fixes were developed. Replaying those exact readings through the final pipeline removed 18 formatting-only disputes, required no targeted calls, and produced four pages without image assets or unreadable placeholders. This checkpoint replay is not a final end-to-end latency measurement or a formal accuracy benchmark.
+- Real CPU EOS, queueing, cancellation and token-limit metadata checks pass. Plugin validation fails explicitly at missing TypeScript/fflate prerequisites. CUDA/6 GB headroom, host Flatpak, actual Zotero, external deployment and representative corpus validation remain user-run checks.
 
 ## 0.2.1 — 2026-11-05
 
