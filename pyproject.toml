@@ -26,7 +26,15 @@ dependencies = [
 mineru-like = "mineru_like.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1", "reportlab>=4,<5"]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.11,<1",
+    "reportlab>=4,<5",
+    "python-docx>=1.2,<2",
+    "pypptx-with-oxml>=1.0.3,<2",
+    "openpyxl>=3.1.5,<4",
+]
 
 [build-system]
 requires = ["hatchling"]
