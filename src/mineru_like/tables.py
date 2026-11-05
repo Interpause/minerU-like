@@ -25,7 +25,10 @@ def _validated(raw, fragments):
     if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
         raise ValueError("Expected a single cross-page table result")
     item = value[0]
-    if item.get("source_pages") == [] and item.get("html") == "No cross-page table exists between these pages.":
+    if (
+        item.get("source_pages") == []
+        and item.get("html") == "No cross-page table exists between these pages."
+    ):
         return None
     if item.get("source_pages") != [1, 2] or not isinstance(item.get("html"), str):
         raise ValueError("No unambiguous two-page table")
@@ -34,18 +37,21 @@ def _validated(raw, fragments):
         r"<img\b", merged, re.I
     ):
         raise ValueError("Invalid or unsupported reconstructed table")
-    source = Counter(cell for fragment in fragments for cell in _cells(fragment) if cell)
-    target = Counter(cell for cell in _cells(merged) if cell)
+    cells_by_fragment = [_cells(fragment) for fragment in fragments]
+    source = [cell for cells in cells_by_fragment for cell in cells]
+    target = _cells(merged)
     allowed = [source]
     # A continued table may repeat its first row as a page header. Permit
     # removing one copy only when the complete first rows match exactly.
     if len(fragments) == 2:
-        rows = [re.search(r"<tr\b[^>]*>(.*?)</tr\s*>", fragment, re.I | re.S) for fragment in fragments]
+        rows = [
+            re.search(r"<tr\b[^>]*>(.*?)</tr\s*>", fragment, re.I | re.S) for fragment in fragments
+        ]
         if all(rows):
             first, second = (_cells(row.group(0)) for row in rows)
             if first and first == second and all(first):
-                allowed.append(source - Counter(first))
-    if not source or target not in allowed:
+                allowed.append(cells_by_fragment[0] + cells_by_fragment[1][len(first) :])
+    if not any(source) or target not in allowed:
         raise ValueError("Reconstructed table does not preserve source cells exactly")
     return merged
 
@@ -175,28 +181,46 @@ def _table_blocks(page):
 def _has_hint(page):
     if _table_blocks(page):
         return True
+
     def evidence(value):
         if isinstance(value, dict):
             return any(
-                (str(key).lower() in {"table", "tables", "has_table", "continuation", "table_continuation"} and bool(item))
+                (
+                    str(key).lower()
+                    in {"table", "tables", "has_table", "continuation", "table_continuation"}
+                    and bool(item)
+                )
                 or evidence(item)
                 for key, item in value.items()
             )
         if isinstance(value, (list, tuple)):
             return any(evidence(item) for item in value)
-        return isinstance(value, str) and bool(re.search(r"\b(?:table|continuation|continued)\b", value, re.I))
+        return isinstance(value, str) and bool(
+            re.search(r"\b(?:table|continuation|continued)\b", value, re.I)
+        )
+
     return evidence(page.metadata) or any(
-        evidence(block.metadata) or bool(re.search(r"<table\b|\btable\s+(?:cont(?:inued)?|continuation)\b", block.content, re.I))
+        evidence(block.metadata)
+        or bool(
+            re.search(r"<table\b|\btable\s+(?:cont(?:inued)?|continuation)\b", block.content, re.I)
+        )
         for block in page.blocks
     )
 
 
 def _markdown(page, replacements, page_no):
-    text = "\n\n".join(replacements.get((page.page_idx, n), block.markdown()) for n, block in enumerate(page.blocks))
-    return re.sub(r"(?<![\w/])(?:page_\d+/)?(images/bbox_\d+_\d+_\d+_\d+\.jpg)", rf"page_{page_no}/\1", text)
+    text = "\n\n".join(
+        replacements.get((page.page_idx, n), block.markdown())
+        for n, block in enumerate(page.blocks)
+    )
+    return re.sub(
+        r"(?<![\w/])(?:page_\d+/)?(images/bbox_\d+_\d+_\d+_\d+\.jpg)", rf"page_{page_no}/\1", text
+    )
 
 
-async def reconstruct_tables(result, workdir, runtime, render_html, *, max_tokens, recover_page=None):
+async def reconstruct_tables(
+    result, workdir, runtime, render_html, *, max_tokens, recover_page=None
+):
     """Reconstruct adjacent candidates right-to-left, preserving original page blocks.
 
     Optional recover_page(index) may return a fresh recovered Page before reconstruction.
@@ -208,8 +232,12 @@ async def reconstruct_tables(result, workdir, runtime, render_html, *, max_token
     right_image = None
     right_pages = []
     for idx in range(len(result.pages) - 2, -1, -1):
-        left, right = result.pages[idx:idx + 2]
-        diagnostic = {"page_idx": idx, "stage": "cross_page_table_advanced", "source_pages": [idx, idx + 1]}
+        left, right = result.pages[idx : idx + 2]
+        diagnostic = {
+            "page_idx": idx,
+            "stage": "cross_page_table_advanced",
+            "source_pages": [idx, idx + 1],
+        }
         if not (_has_hint(left) or _has_hint(right)):
             diagnostic["outcome"] = "heuristic_skip"
             result.diagnostics.append(diagnostic)
@@ -230,23 +258,34 @@ async def reconstruct_tables(result, workdir, runtime, render_html, *, max_token
                 right = recovered_pages.get(idx + 1, right)
             left_tables, right_tables = _table_blocks(left), _table_blocks(right)
             left_md, right_md = _markdown(left, replacements, 1), _markdown(right, replacements, 2)
-            prompt = (PROMPT.read_text() + "\n\nInput Markdown:\n"
-                      + f'<INPUT_PAGE index="1">\n{left_md}\n</INPUT_PAGE>\n'
-                      + f'<INPUT_PAGE index="2">\n{right_md}\n</INPUT_PAGE>')
-            raw = await runtime.infer([workdir / f"page-{idx}.png", right_image or workdir / f"page-{idx + 1}.png"], prompt, max_tokens=max_tokens)
+            prompt = (
+                PROMPT.read_text()
+                + "\n\nInput Markdown:\n"
+                + f'<INPUT_PAGE index="1">\n{left_md}\n</INPUT_PAGE>\n'
+                + f'<INPUT_PAGE index="2">\n{right_md}\n</INPUT_PAGE>'
+            )
+            raw = await runtime.infer(
+                [workdir / f"page-{idx}.png", right_image or workdir / f"page-{idx + 1}.png"],
+                prompt,
+                max_tokens=max_tokens,
+            )
             diagnostic["raw"] = str(raw)
             if getattr(raw, "finish_reason", None) is not None:
                 diagnostic["finish_reason"] = raw.finish_reason
                 diagnostic["usage"] = getattr(raw, "usage", {})
             # Parse the model's JSON first, including an explicit negative result.
             parsed = json.loads(raw)
-            if parsed == [{"source_pages": [], "html": "No cross-page table exists between these pages."}]:
+            if parsed == [
+                {"source_pages": [], "html": "No cross-page table exists between these pages."}
+            ]:
                 diagnostic["outcome"] = "no_continuation"
                 result.diagnostics.append(diagnostic)
                 right_image, right_pages = None, []
                 continue
             if len(left_tables) != 1 or len(right_tables) != 1:
-                raise ValueError("Missing or ambiguous source table fragments; targeted page recovery required")
+                raise ValueError(
+                    "Missing or ambiguous source table fragments; targeted page recovery required"
+                )
             left_n, left_block = left_tables[0]
             right_n, right_block = right_tables[0]
             right_html = replacements.get((idx + 1, right_n), right_block.content)
@@ -254,11 +293,15 @@ async def reconstruct_tables(result, workdir, runtime, render_html, *, max_token
             if any(not _cells(fragment) for fragment in fragments):
                 raise ValueError("Missing source table cells; targeted page recovery required")
             if any(not re.search(r"</table\s*>", fragment, re.I) for fragment in fragments):
-                diagnostic["warning"] = "Source table fragment is truncated; only complete source cells can be checked"
+                diagnostic["warning"] = (
+                    "Source table fragment is truncated; only complete source cells can be checked"
+                )
             merged = _validated(raw, fragments)
             if merged is None:
                 raise ValueError("Unexpected empty reconstruction")
-            source_cells = Counter(cell for fragment in fragments for cell in _cells(fragment) if cell)
+            source_cells = Counter(
+                cell for fragment in fragments for cell in _cells(fragment) if cell
+            )
             merged_cells = Counter(cell for cell in _cells(merged) if cell)
             if source_cells != merged_cells:
                 diagnostic["repeated_first_row_deduplicated"] = True
