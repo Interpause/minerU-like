@@ -661,7 +661,7 @@ async def parse_native(
                         replacements[-1].footnotes.extend(block.footnotes)
                     del enriched[origin_index]
                     converted_assets.add(block.image_source)
-                    for replacement in enriched:
+                    for replacement in replacements:
                         if replacement.metadata.get("source_image") == block.image_source:
                             replacement.metadata.pop("source_image", None)
                             replacement.metadata.update(

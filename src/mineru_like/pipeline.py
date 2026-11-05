@@ -1,4 +1,4 @@
-"""Page-oriented visual extraction and conservative native text routing."""
+"""Full-page visual extraction with localized recovery from source evidence."""
 
 from __future__ import annotations
 
