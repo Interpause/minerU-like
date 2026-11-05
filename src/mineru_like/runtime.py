@@ -140,7 +140,7 @@ class InferenceRuntime:
                 binary = self._asset(self.settings.binary, "binary")
                 model = self._asset(self.settings.model, "model")
                 mmproj = self._asset(self.settings.mmproj, "mmproj")
-                await self._check_version(binary)
+                #await self._check_version(binary)
                 self.device = await self._select_device(binary)
                 await self._launch(binary, model, mmproj)
             else:
