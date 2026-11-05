@@ -25,6 +25,8 @@ def _validated(raw, fragments):
     if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
         raise ValueError("Expected a single cross-page table result")
     item = value[0]
+    if item.get("source_pages") == [] and item.get("html") == "No cross-page table exists between these pages.":
+        return None
     if item.get("source_pages") != [1, 2] or not isinstance(item.get("html"), str):
         raise ValueError("No unambiguous two-page table")
     merged = item["html"]
@@ -34,7 +36,16 @@ def _validated(raw, fragments):
         raise ValueError("Invalid or unsupported reconstructed table")
     source = Counter(cell for fragment in fragments for cell in _cells(fragment) if cell)
     target = Counter(cell for cell in _cells(merged) if cell)
-    if not source or target != source:
+    allowed = [source]
+    # A continued table may repeat its first row as a page header. Permit
+    # removing one copy only when the complete first rows match exactly.
+    if len(fragments) == 2:
+        rows = [re.search(r"<tr\b[^>]*>(.*?)</tr\s*>", fragment, re.I | re.S) for fragment in fragments]
+        if all(rows):
+            first, second = (_cells(row.group(0)) for row in rows)
+            if first and first == second and all(first):
+                allowed.append(source - Counter(first))
+    if not source or target not in allowed:
         raise ValueError("Reconstructed table does not preserve source cells exactly")
     return merged
 
@@ -157,81 +168,126 @@ async def render_table_html(value, output):
     await asyncio.to_thread(_render_locked, value, output)
 
 
-async def reconstruct_tables(result, workdir, runtime, render_html, *, max_tokens):
-    """Merge single-table runs; render_html(html_text, output_path) must render HTML to an image.
+def _table_blocks(page):
+    return [(n, block) for n, block in enumerate(page.blocks) if block.type == "table"]
 
-    The renderer must isolate untrusted model HTML. Returns the number of accepted
-    pair merges; original page blocks remain intact and Markdown carries merges.
+
+def _has_hint(page):
+    if _table_blocks(page):
+        return True
+    def evidence(value):
+        if isinstance(value, dict):
+            return any(
+                (str(key).lower() in {"table", "tables", "has_table", "continuation", "table_continuation"} and bool(item))
+                or evidence(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(evidence(item) for item in value)
+        return isinstance(value, str) and bool(re.search(r"\b(?:table|continuation|continued)\b", value, re.I))
+    return evidence(page.metadata) or any(
+        evidence(block.metadata) or bool(re.search(r"<table\b|\btable\s+(?:cont(?:inued)?|continuation)\b", block.content, re.I))
+        for block in page.blocks
+    )
+
+
+def _markdown(page, replacements, page_no):
+    text = "\n\n".join(replacements.get((page.page_idx, n), block.markdown()) for n, block in enumerate(page.blocks))
+    return re.sub(r"(?<![\w/])(?:page_\d+/)?(images/bbox_\d+_\d+_\d+_\d+\.jpg)", rf"page_{page_no}/\1", text)
+
+
+async def reconstruct_tables(result, workdir, runtime, render_html, *, max_tokens, recover_page=None):
+    """Reconstruct adjacent candidates right-to-left, preserving original page blocks.
+
+    Optional recover_page(index) may return a fresh recovered Page before reconstruction.
+    Recovered pages are committed only when their pair is accepted.
     """
     workdir = Path(workdir)
-    tables = [
-        [(n, b) for n, b in enumerate(page.blocks) if b.type == "table"] for page in result.pages
-    ]
     replacements = {}
     merged_count = 0
-    idx = len(tables) - 2
-    while idx >= 0:
-        if len(tables[idx]) != 1 or len(tables[idx + 1]) != 1:
-            idx -= 1
-            continue
-        start = idx
-        while start > 0 and len(tables[start - 1]) == 1:
-            start -= 1
-        right_html = tables[idx + 1][0][1].content
-        right_markdown = "\n\n".join(block.markdown() for block in result.pages[idx + 1].blocks)
-        right_image = workdir / f"page-{idx + 1}.png"
-        right_pages = [idx + 1]
-        for left_idx in range(idx, start - 1, -1):
-            left_block_idx, left_block = tables[left_idx][0]
-            left_markdown = "\n\n".join(block.markdown() for block in result.pages[left_idx].blocks)
-            prompt = (
-                PROMPT.read_text()
-                + "\n\nInput Markdown:\n"
-                + '<INPUT_PAGE index="1">\n'
-                + left_markdown
-                + "\n</INPUT_PAGE>\n"
-                + '<INPUT_PAGE index="2">\n'
-                + right_markdown
-                + "\n</INPUT_PAGE>"
-            )
-            diagnostic = {
-                "page_idx": left_idx,
-                "stage": "cross_page_table_advanced",
-                "source_pages": [left_idx, *right_pages],
-            }
-            try:
-                raw = await runtime.infer(
-                    [workdir / f"page-{left_idx}.png", right_image], prompt, max_tokens=max_tokens
-                )
-                diagnostic["raw"] = raw
-                merged = _validated(raw, [left_block.content, right_html])
-                # Render the updated earlier page before using it as the right-hand
-                # image in the next recursive step. A missing renderer is failure.
-                rendered = workdir / f"table-recursive-{left_idx}.png"
-                if left_idx > start:
-                    page_html = _page_representation(result.pages[left_idx], left_block_idx, merged)
-                    await render_html(page_html, rendered)
-                    with Image.open(rendered) as image:
-                        image.verify()
-                replacements[(left_idx, left_block_idx)] = merged
-                for page_no in right_pages:
-                    replacements[(page_no, tables[page_no][0][0])] = ""
-                left_block.metadata["continues_on_page"] = left_idx + 1
-                tables[left_idx + 1][0][1].metadata["continues_from_page"] = left_idx
-                merged_count += 1
-                right_markdown = "\n\n".join(
-                    merged if n == left_block_idx else block.markdown()
-                    for n, block in enumerate(result.pages[left_idx].blocks)
-                )
-                right_html, right_image = merged, rendered
-                right_pages.insert(0, left_idx)
-                diagnostic["accepted"] = True
-            except Exception as exc:
-                diagnostic["error"] = str(exc)
-                result.diagnostics.append(diagnostic)
-                break
+    right_image = None
+    right_pages = []
+    for idx in range(len(result.pages) - 2, -1, -1):
+        left, right = result.pages[idx:idx + 2]
+        diagnostic = {"page_idx": idx, "stage": "cross_page_table_advanced", "source_pages": [idx, idx + 1]}
+        if not (_has_hint(left) or _has_hint(right)):
+            diagnostic["outcome"] = "heuristic_skip"
             result.diagnostics.append(diagnostic)
-        idx = start - 1
+            right_image, right_pages = None, []
+            continue
+        try:
+            recovered_pages = {}
+            if recover_page:
+                for page_index in (idx, idx + 1):
+                    existing = _table_blocks(result.pages[page_index])
+                    if not existing or (len(existing) == 1 and not _cells(existing[0][1].content)):
+                        recovered = await recover_page(page_index)
+                        if recovered is not None:
+                            if recovered.page_idx != page_index:
+                                raise ValueError("Recovered page index does not match source page")
+                            recovered_pages[page_index] = recovered
+                left = recovered_pages.get(idx, left)
+                right = recovered_pages.get(idx + 1, right)
+            left_tables, right_tables = _table_blocks(left), _table_blocks(right)
+            left_md, right_md = _markdown(left, replacements, 1), _markdown(right, replacements, 2)
+            prompt = (PROMPT.read_text() + "\n\nInput Markdown:\n"
+                      + f'<INPUT_PAGE index="1">\n{left_md}\n</INPUT_PAGE>\n'
+                      + f'<INPUT_PAGE index="2">\n{right_md}\n</INPUT_PAGE>')
+            raw = await runtime.infer([workdir / f"page-{idx}.png", right_image or workdir / f"page-{idx + 1}.png"], prompt, max_tokens=max_tokens)
+            diagnostic["raw"] = str(raw)
+            if getattr(raw, "finish_reason", None) is not None:
+                diagnostic["finish_reason"] = raw.finish_reason
+                diagnostic["usage"] = getattr(raw, "usage", {})
+            # Parse the model's JSON first, including an explicit negative result.
+            parsed = json.loads(raw)
+            if parsed == [{"source_pages": [], "html": "No cross-page table exists between these pages."}]:
+                diagnostic["outcome"] = "no_continuation"
+                result.diagnostics.append(diagnostic)
+                right_image, right_pages = None, []
+                continue
+            if len(left_tables) != 1 or len(right_tables) != 1:
+                raise ValueError("Missing or ambiguous source table fragments; targeted page recovery required")
+            left_n, left_block = left_tables[0]
+            right_n, right_block = right_tables[0]
+            right_html = replacements.get((idx + 1, right_n), right_block.content)
+            fragments = [left_block.content, right_html]
+            if any(not _cells(fragment) for fragment in fragments):
+                raise ValueError("Missing source table cells; targeted page recovery required")
+            if any(not re.search(r"</table\s*>", fragment, re.I) for fragment in fragments):
+                diagnostic["warning"] = "Source table fragment is truncated; only complete source cells can be checked"
+            merged = _validated(raw, fragments)
+            if merged is None:
+                raise ValueError("Unexpected empty reconstruction")
+            source_cells = Counter(cell for fragment in fragments for cell in _cells(fragment) if cell)
+            merged_cells = Counter(cell for cell in _cells(merged) if cell)
+            if source_cells != merged_cells:
+                diagnostic["repeated_first_row_deduplicated"] = True
+            rendered = workdir / f"table-recursive-{idx}.png"
+            if idx > 0 and (_has_hint(result.pages[idx - 1]) or _has_hint(left)):
+                await render_html(_page_representation(left, left_n, merged), rendered)
+                with Image.open(rendered) as image:
+                    image.verify()
+                next_image = rendered
+            else:
+                next_image = None
+            pages = [idx + 1, *right_pages] if right_pages else [idx + 1]
+            for page_index, recovered in recovered_pages.items():
+                result.pages[page_index] = recovered
+            replacements[(idx, left_n)] = merged
+            for page_no in pages:
+                for n, _ in _table_blocks(result.pages[page_no]):
+                    replacements[(page_no, n)] = ""
+            left_block.metadata["continues_on_page"] = idx + 1
+            right_block.metadata["continues_from_page"] = idx
+            merged_count += 1
+            right_image, right_pages = next_image, pages
+            diagnostic.update(accepted=True, outcome="merged", source_pages=[idx, *pages])
+        except (RuntimeError, TimeoutError):
+            raise
+        except Exception as exc:
+            diagnostic.update(outcome="uncertain", error=str(exc))
+            right_image, right_pages = None, []
+        result.diagnostics.append(diagnostic)
     if replacements:
         chunks = []
         for page in result.pages:

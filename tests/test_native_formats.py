@@ -190,3 +190,52 @@ async def test_docx_embedded_image_asset_survives(tmp_path):
     assert images
     assert all(block.image_source in result.assets for block in images)
     result.validate()
+
+
+@pytest.mark.asyncio
+async def test_docx_structured_omml_fraction_and_scripts(tmp_path):
+    docx = pytest.importorskip("docx")
+    from docx.oxml import parse_xml
+
+    document = docx.Document()
+    paragraph = document.add_paragraph("Equation ")
+    paragraph._p.append(parse_xml('''<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:f><m:num><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:num><m:den><m:sSub><m:e><m:r><m:t>y</m:t></m:r></m:e><m:sub><m:r><m:t>1</m:t></m:r></m:sub></m:sSub></m:den></m:f></m:oMath>'''))
+    path = tmp_path / "structured.docx"
+    document.save(path)
+    try:
+        result = await Pipeline(Settings(captioning=False), None).parse(path, path.name, "auto", "standard", tmp_path / "work")
+    except ValueError as exc:
+        assert "math" in str(exc).lower() or "visual" in str(exc).lower()
+    else:
+        markdown = result.markdown()
+        assert r"\frac" in markdown and "^" in markdown and "_" in markdown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ext", ["html", "epub"])
+async def test_native_mathml_preserves_fraction_and_scripts(tmp_path, ext):
+    math = '<math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><msup><mi>x</mi><mn>2</mn></msup><msub><mi>y</mi><mn>1</mn></msub></mfrac></math>'
+    path = tmp_path / ("math." + ext)
+    if ext == "html":
+        path.write_text('<html><body><p>Equation ' + math + '</p></body></html>')
+    else:
+        fixture(path, ext)
+        with zipfile.ZipFile(path) as archive:
+            entries = {name: archive.read(name) for name in archive.namelist()}
+        entries["OEBPS/chapter.xhtml"] = ('<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Test</title></head><body><p>Equation ' + math + '</p></body></html>').encode()
+        package(path, entries)
+    try:
+        result = await Pipeline(Settings(captioning=False), None).parse(path, path.name, "auto", "standard", tmp_path / "work")
+    except ValueError as exc:
+        assert "math" in str(exc).lower() or "visual" in str(exc).lower()
+    else:
+        markdown = result.markdown()
+        assert r"\frac" in markdown and "^" in markdown and "_" in markdown
+
+
+@pytest.mark.asyncio
+async def test_unhandled_html_mathml_is_not_silent_success(tmp_path):
+    path = tmp_path / "unsupported.html"
+    path.write_text('<html><body><p>Equation <math xmlns="http://www.w3.org/1998/Math/MathML"><munknown><mi>x</mi></munknown></math></p></body></html>')
+    with pytest.raises(ValueError, match="(?i)math|visual"):
+        await Pipeline(Settings(captioning=False), None).parse(path, path.name, "auto", "standard", tmp_path / "work")

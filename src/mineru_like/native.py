@@ -207,6 +207,9 @@ def _nested(value, depth=0):
 
 def _inventory(path):
     if not zipfile.is_zipfile(path):
+        if path.suffix.lower() in {".html", ".htm", ".shtml"} and path.stat().st_size < 20_000_000:
+            data = path.read_bytes()
+            return [], len(re.findall(rb"<(?:[\w.-]+:)?math(?:\s|>)", data, re.I)), 0
         return [], 0, 0
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
@@ -216,7 +219,7 @@ def _inventory(path):
         ]
         math = 0
         for name in names:
-            if name.lower().endswith(".xml") and archive.getinfo(name).file_size < 20_000_000:
+            if name.lower().endswith((".xml", ".xhtml", ".html", ".htm")) and archive.getinfo(name).file_size < 20_000_000:
                 data = archive.read(name)
                 math += len(re.findall(rb"<(?:[\w.-]+:)?(?:oMath|math)(?:\s|>)", data))
                 # Office grouped or floating shapes can be omitted by the converter.
