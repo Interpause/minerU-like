@@ -1,4 +1,4 @@
-"""Separate model-pass verification and conservative targeted recovery."""
+"""Independent page comparison and conservative, localized recovery."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from difflib import SequenceMatcher
 from html import unescape
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Protocol, TypeVar, cast
 
@@ -38,163 +37,276 @@ class VerificationPipeline(Protocol):
 
 
 class VerificationError(ValueError):
-    """A separate verification pass did not support a complete page result."""
-
-
-def _region_text(raw: str) -> str:
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("Empty region OCR")
-    return raw.strip()
-
-
-def _retain_uncertain(page: Page, imagepath: Path, reason: str, block: Block | None = None) -> None:
-    from .result import Block
-
-    directory = Path(imagepath).parent / "images"
-    directory.mkdir(parents=True, exist_ok=True)
-    name = f"images/page_{page.page_idx}_uncertain_{len(page.blocks)}.png"
-    with Image.open(imagepath) as source:
-        image = source.convert("RGB")
-        if block and block.bbox:
-            w, h = image.size
-            image = image.crop(
-                cast(
-                    tuple[int, int, int, int],
-                    tuple(int(v * (w if i % 2 == 0 else h)) for i, v in enumerate(block.bbox)),
-                )
-            )
-        image.save(Path(imagepath).parent / name)
-    if block:
-        block.metadata["uncertain"] = reason
-    else:
-        for item in page.blocks:
-            if item.content:
-                item.metadata["uncertain"] = reason
-    page.blocks.append(Block("text", "[Uncertain text: " + reason + "]"))
-    page.blocks.append(Block("image", "", image_source=name, metadata={"warning": reason}))
+    """A separate verification pass could not be interpreted."""
 
 
 def _tokens(text: str) -> Counter[str]:
-    # Ignore layout/markup differences while retaining words, numerals and
-    # formula identifiers. Unmatched numbers remain material even on long pages.
     text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
     text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text)
     return Counter(re.findall(r"[+−-]?\d+(?:[.,]\d+)*|[^\W\d_]+", text, re.UNICODE))
 
 
-def _content(blocks: list[Block]) -> str:
-    return "\n".join(
-        b.content
-        for b in blocks
-        if b.type not in {"image", "chart", "header_image", "footer_image"}
-    )
-
-
-def _difference(a: str, b: str) -> tuple[set[str], float]:
-    left, right = _tokens(a), _tokens(b)
-    missing, extra = left - right, right - left
-    numbers = {word for word in missing.keys() | extra.keys() if any(c.isdigit() for c in word)}
-    total = max(sum(left.values()), sum(right.values()), 1)
-    return numbers, (sum(missing.values()) + sum(extra.values())) / total
-
-
 def _sequence(text: str) -> list[str]:
-    # Normalize markup and soft line wrapping, but retain operators and signs.
     text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
-    text = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", text)
     text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text)
-    text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text)
-    text = text.replace("−", "-")
-    return re.findall(r"[+-]?\d+(?:[.,]\d+)*|[^\W\d_]+|[+\-*/=<>±×÷≤≥≠∑∫]", text, re.UNICODE)
+    text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text).replace("−", "-")
+    return re.findall(r"[+-]?\d+(?:[.,]\d+)*|[^\W\d_]+|[+\-*/=<>±×÷≤≥≠∑∫]", text)
 
 
 def _agree(a: str, b: str) -> bool:
     return _sequence(a) == _sequence(b)
 
 
-class _TableRows(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.tables: list[list[list[str]]] = []
-        self.table: list[list[str]] | None = None
-        self.row: list[str] | None = None
-        self.cell: list[str] | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "table" and self.table is None:
-            self.table = []
-        elif tag == "tr" and self.table is not None:
-            self.row = []
-        elif tag in {"td", "th"} and self.row is not None:
-            self.cell = []
-
-    def handle_data(self, data: str) -> None:
-        if self.cell is not None:
-            self.cell.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"td", "th"} and self.cell is not None:
-            cast(list[str], self.row).append(_cell("".join(self.cell)))
-            self.cell = None
-        elif tag == "tr" and self.row is not None:
-            cast(list[list[str]], self.table).append(self.row)
-            self.row = None
-        elif tag == "table" and self.table is not None:
-            self.tables.append(self.table)
-            self.table = None
+def _unwrap_math(value: str) -> str:
+    value = unescape(value.strip())
+    for left, right in (("$$", "$$"), ("$", "$"), (r"\(", r"\)"), (r"\[", r"\]")):
+        if (
+            value.startswith(left)
+            and value.endswith(right)
+            and len(value) >= len(left) + len(right)
+        ):
+            return value[len(left) : -len(right)].strip()
+    return value
 
 
-def _tables(text: str) -> list[list[list[str]]]:
-    parser = _TableRows()
-    parser.feed(text)
-    tables = parser.tables
-    rows = []
-    for line in text.splitlines():
-        if "|" in line and "<" not in line:
-            cells = line.strip().strip("|").split("|")
-            if all(re.fullmatch(r"[\s:-]+", cell) for cell in cells):
-                continue
-            rows.append([_cell(cell) for cell in cells])
-        elif rows:
-            tables.append(rows)
-            rows = []
-    if rows:
-        tables.append(rows)
-    return tables
+def canonical_math(value: str) -> str:
+    """Normalize presentation commands only; retain all mathematical structure."""
+    value = _unwrap_math(value)
+    value = re.sub(r"\\(?:dfrac|tfrac)\b", r"\\frac", value)
+    value = re.sub(r"\\(?:left|right|displaystyle|textstyle)\b", "", value)
+    value = re.sub(r"\\(?:,|;|!|:|quad\b|qquad\b|\s)", "", value)
+    return re.sub(r"\s+", "", value)
 
 
-def _math(value: str) -> str:
-    value = value.strip()
-    if value.startswith("$$") and value.endswith("$$"):
-        value = value[2:-2]
-    elif value.startswith("$") and value.endswith("$"):
-        value = value[1:-1]
-    return re.sub(r"\s+", "", unescape(value))
+def formula_is_suspicious(raw: str) -> bool:
+    value = _unwrap_math(raw)
+    if not value or any(s in value for s in ("�", "???", "...", "…", "```")):
+        return True
+    if re.search(r"\\(?:frac|dfrac|tfrac)\s*(?:$|\{[^{}]*\}\s*$)", value):
+        return True
+    stack: list[str] = []
+    for match in re.finditer(r"\\[{}]|[{}]", value):
+        token = match.group()
+        if token == "{":
+            stack.append(token)
+        elif token == "}":
+            if not stack:
+                return True
+            stack.pop()
+    if stack or re.search(r"[_^=+\-*/]\s*$", value):
+        return True
+    begins = re.findall(r"\\begin\{([^{}]+)\}", value)
+    ends = re.findall(r"\\end\{([^{}]+)\}", value)
+    return begins != list(reversed(ends))
 
 
-def _cell(value: str) -> str:
-    return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]*>", "", value))).strip().casefold()
+_MATH = re.compile(
+    r"\$\$([\s\S]*?)\$\$|(?<!\$)\$([^$\n]+)\$(?!\$)|\\\(([\s\S]*?)\\\)|\\\[([\s\S]*?)\\\]"
+)
+_FORMULAS = {
+    "equation",
+    "equation_interline",
+    "equation_inline",
+    "display_formula",
+    "inline_formula",
+}
+_IGNORED = {"image", "chart", "header_image", "footer_image"}
 
 
-def _critical_supported(blocks: list[Block], independent: str) -> bool:
-    evidence_tables = _tables(independent)
-    formulae = re.findall(r"\$\$([\s\S]*?)\$\$|(?<!\$)\$([^$\n]+)\$(?!\$)", independent)
-    evidence_formulae = Counter(_math(a or b) for a, b in formulae)
-    source_tables = []
-    source_formulae = []
-    for block in blocks:
-        if block.type == "table":
-            tables = _tables(block.content)
-            if not tables:
-                return False
-            source_tables.extend(tables)
-        elif block.type in {"equation", "equation_interline", "display_formula", "inline_formula"}:
-            source_formulae.append(_math(block.content))
-    for table in source_tables:
-        if table not in evidence_tables:
-            return False
-        evidence_tables.remove(table)
-    return not (Counter(source_formulae) - evidence_formulae)
+def _units(text: str, *, formula: bool = False) -> list[tuple[str, str]]:
+    if formula:
+        return [("math:" + canonical_math(text), text)]
+    result: list[tuple[str, str]] = []
+    pos = 0
+    for match in _MATH.finditer(text):
+        result.extend(("text:" + token, token) for token in _sequence(text[pos : match.start()]))
+        result.append(("math:" + canonical_math(match.group()), match.group()))
+        pos = match.end()
+    result.extend(("text:" + token, token) for token in _sequence(text[pos:]))
+    return result
+
+
+def _region_text(raw: str) -> str:
+    if not isinstance(raw, str) or not raw.strip() or "�" in raw or "???" in raw:
+        raise ValueError("Invalid region OCR")
+    return raw.strip()
+
+
+def _formula_text(raw: str) -> str:
+    if not isinstance(raw, str) or formula_is_suspicious(raw):
+        raise ValueError("Invalid or incomplete formula")
+    if len(list(_MATH.finditer(raw))) > 1 or "```" in raw:
+        raise ValueError("Multiple formulas in region")
+    return raw.strip()
+
+
+def _location(page: Page, block: Block) -> str:
+    if block.bbox is None:
+        return f"p{page.page_idx + 1}"
+    x1, y1, x2, y2 = block.bbox
+    x, y = (x1 + x2) / 2, (y1 + y2) / 2
+    vertical = "top" if y < 1 / 3 else "middle" if y < 2 / 3 else "bottom"
+    horizontal = "left" if x < 1 / 3 else "center" if x < 2 / 3 else "right"
+    return f"p{page.page_idx + 1}, approx. {vertical}-{horizontal}"
+
+
+async def recover_formula(
+    pipeline: VerificationPipeline,
+    page_idx: int,
+    original: str,
+    box: tuple[float, float, float, float],
+    crop_pdf: Callable[..., Path | None],
+    diagnostics: list[Diagnostic],
+    independent: str | None = None,
+) -> str | None:
+    """Return a supported targeted formula, using at most two distinct crops."""
+    from .pipeline import PROMPTS
+
+    previous: bytes | None = None
+    for view in range(2):
+        crop = crop_pdf(box=[round(v * 1000) for v in box], ordinal=0, view=view)
+        if crop is None:
+            break
+        data = crop.read_bytes()
+        if data == previous:
+            break
+        previous = data
+        try:
+            candidate = await pipeline._infer_valid(
+                [crop],
+                (PROMPTS / "formula_recognition.txt").read_text(),
+                _formula_text,
+                diagnostics,
+                page_idx,
+                "formula_recovery",
+                None,
+            )
+        except ValueError:
+            continue
+        if independent is not None:
+            if canonical_math(candidate) == canonical_math(independent):
+                return candidate
+        elif formula_is_suspicious(original):
+            return candidate
+    return None
+
+
+async def _recover(
+    pipeline: VerificationPipeline,
+    page: Page,
+    block: Block,
+    index: int,
+    imagepath: Path,
+    diagnostics: list[Diagnostic],
+    crop_pdf: Callable[..., Path] | None,
+    stage: str,
+    expected: str | None = None,
+) -> None:
+    from .pipeline import PROMPTS
+
+    is_formula = block.type in _FORMULAS
+    original = block.content
+    if block.bbox is None:
+        diagnostics.append(
+            {
+                "page_idx": page.page_idx,
+                "stage": stage,
+                "status": "unresolved",
+                "region": index,
+                "reason": "missing bounds",
+            }
+        )
+        return
+    with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
+        if crop_pdf:
+            crop = crop_pdf(box=[round(v * 1000) for v in block.bbox], ordinal=index)
+            if crop is None:
+                diagnostics.append(
+                    {
+                        "page_idx": page.page_idx,
+                        "stage": stage,
+                        "status": "unresolved",
+                        "region": index,
+                        "reason": "crop unavailable",
+                    }
+                )
+                return
+        else:
+            with Image.open(imagepath) as image:
+                width, height = image.size
+                bounds = tuple(
+                    max(
+                        0,
+                        min(
+                            width if i % 2 == 0 else height,
+                            int(v * (width if i % 2 == 0 else height)),
+                        ),
+                    )
+                    for i, v in enumerate(block.bbox)
+                )
+                if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                    diagnostics.append(
+                        {
+                            "page_idx": page.page_idx,
+                            "stage": stage,
+                            "status": "unresolved",
+                            "region": index,
+                            "reason": "invalid bounds",
+                        }
+                    )
+                    return
+                crop = Path(directory) / "region.png"
+                image.crop(cast(tuple[int, int, int, int], bounds)).save(crop)
+        prompt = (
+            PROMPTS / ("formula_recognition.txt" if is_formula else "region_ocr.txt")
+        ).read_text()
+        prompt = prompt.replace("{target_region}", "[0, 0, 999, 999]")
+        try:
+            candidate = await pipeline._infer_valid(
+                [crop],
+                prompt,
+                _formula_text if is_formula else _region_text,
+                diagnostics,
+                page.page_idx,
+                stage,
+                None,
+            )
+        except ValueError:
+            candidate = None
+    valid_original = (
+        not formula_is_suspicious(original)
+        if is_formula
+        else bool(original.strip()) and "�" not in original and "???" not in original
+    )
+    matches = (
+        (canonical_math(candidate) == canonical_math(expected))
+        if is_formula and candidate and expected
+        else bool(candidate and expected and _agree(candidate, expected))
+    )
+    accepted = bool(candidate and ((expected and matches) or (not expected and not valid_original)))
+    if accepted:
+        block.metadata["verification_original"] = original
+        block.content = cast(str, candidate)
+    elif not valid_original and candidate is None:
+        kind = "formula" if is_formula else "text"
+        block.metadata["verification_original"] = original
+        block.content = f"[Unclear {kind}; {_location(page, block)}; zoom if possible.]"
+    block.metadata["verification"] = {
+        "status": "recovered" if accepted else "unresolved",
+        "independent": expected,
+        "targeted": candidate,
+    }
+    diagnostics.append(
+        {
+            "page_idx": page.page_idx,
+            "stage": stage,
+            "status": "recovered" if accepted else "unresolved",
+            "region": index,
+            "initial": original,
+            "independent": expected,
+            "targeted": candidate,
+        }
+    )
 
 
 async def verify_page(
@@ -207,28 +319,18 @@ async def verify_page(
     crop_pdf: Callable[..., Path] | None = None,
     region_imagepath: Path | None = None,
 ) -> Page:
-    """Compare a separate model pass and retain source evidence for disagreements.
-
-    The separate pass uses the same inference backend; agreement is not ground truth.
-    Native content is never replaced. A visual text block may be replaced only
-    if targeted region OCR agrees with the separate pass.
-    """
+    """Align a single independent reading in order and inspect only disputed blocks."""
     from .pipeline import PROMPTS
-
-    def markdown(raw: str) -> str:
-        if not isinstance(raw, str) or not raw.strip():
-            raise ValueError("Empty independent Markdown")
-        return raw
 
     try:
         independent = await pipeline._infer_valid(
             [Path(imagepath)],
             (PROMPTS / "document_markdown.txt").read_text(),
-            markdown,
+            _region_text,
             diagnostics,
             page.page_idx,
             "advanced_markdown",
-            recovery,
+            None,
         )
     except ValueError:
         diagnostics.append(
@@ -236,125 +338,75 @@ async def verify_page(
                 "page_idx": page.page_idx,
                 "stage": "advanced_verification",
                 "status": "unresolved",
-                "warning": "Independent Markdown unavailable",
+                "reason": "independent reading unavailable",
             }
         )
-        _retain_uncertain(page, imagepath, "Independent verification unavailable")
         return page
-    current = _content(page.blocks)
-    if _agree(current, independent) and _critical_supported(page.blocks, independent):
-        diagnostics.append(
-            {"page_idx": page.page_idx, "stage": "advanced_verification", "status": "agreed"}
-        )
-        return page
-
-    # Only bounded text regions are candidates. All changes are staged until
-    # the complete page agrees with the independent representation.
-    replacements = {}
-    candidates = {}
-    independent_sequence = _sequence(independent)
-    with Image.open(region_imagepath or imagepath) as original:
-        image = original.convert("RGB")
+    left: list[str] = []
+    owners: list[int] = []
     for index, block in enumerate(page.blocks):
-        if (
-            block.type not in {"text", "content", "abstract", "reference_content", "title"}
-            or not block.bbox
-            or str(block.metadata.get("source", "")).startswith("native")
-        ):
+        if block.type in _IGNORED:
             continue
-        x1, y1, x2, y2 = block.bbox
-        width, height = image.size
-        bounds = (
-            max(0, int(x1 * width)),
-            max(0, int(y1 * height)),
-            min(width, int(x2 * width)),
-            min(height, int(y2 * height)),
-        )
-        if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        units = _units(block.content, formula=block.type in _FORMULAS)
+        left.extend(unit[0] for unit in units)
+        owners.extend([index] * len(units))
+    right = _units(independent)
+    differences: dict[int, list[str]] = {}
+    for tag, i1, i2, j1, j2 in SequenceMatcher(
+        None, left, [x[0] for x in right], autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
             continue
-        with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
-            if crop_pdf:
-                crop = crop_pdf(box=[round(v * 1000) for v in block.bbox], ordinal=index)
-            else:
-                crop = Path(directory) / "region.png"
-                image.crop(bounds).save(crop)
-            try:
-                items = await pipeline._infer_valid(
-                    [crop],
-                    (PROMPTS / "region_ocr.txt")
-                    .read_text()
-                    .replace("{target_region}", "[0, 0, 1000, 1000]"),
-                    _region_text,
-                    diagnostics,
-                    page.page_idx,
-                    "advanced_region",
-                    None,
-                )
-            except ValueError:
-                continue
-        candidate = items
-        if candidate == block.content:
-            continue
-        candidates[index] = candidate
-        candidate_sequence = _sequence(candidate)
-        supported = bool(candidate_sequence) and any(
-            independent_sequence[i : i + len(candidate_sequence)] == candidate_sequence
-            for i in range(len(independent_sequence) - len(candidate_sequence) + 1)
-        )
-        revised_blocks = [
-            replacements.get(i, b.content)
-            for i, b in enumerate(page.blocks)
-            if b.type not in {"image", "chart", "header_image", "footer_image"}
-        ]
-        current_text = "\n".join(revised_blocks)
-        proposed = "\n".join(
-            candidate if i == index else replacements.get(i, b.content)
-            for i, b in enumerate(page.blocks)
-            if b.type not in {"image", "chart", "header_image", "footer_image"}
-        )
-        current_score = SequenceMatcher(None, _sequence(current_text), independent_sequence).ratio()
-        proposed_score = SequenceMatcher(None, _sequence(proposed), independent_sequence).ratio()
-        if supported and proposed_score > current_score:
-            replacements[index] = candidate
-    revised = "\n".join(
-        replacements.get(i, b.content)
-        for i, b in enumerate(page.blocks)
-        if b.type not in {"image", "chart", "header_image", "footer_image"}
-    )
-    if not _agree(revised, independent) or not _critical_supported(page.blocks, independent):
-        numbers, fraction = _difference(revised, independent)
-        diagnostics.append(
-            {
-                "page_idx": page.page_idx,
-                "stage": "advanced_verification",
-                "status": "unresolved",
-                "number_disagreements": sorted(numbers),
-                "token_difference": fraction,
-            }
-        )
-        from .result import Block
-
-        for index, text in candidates.items():
-            page.blocks[index].metadata["advanced_candidate_content"] = text
-            page.blocks.append(
-                Block(
-                    "text",
-                    "[Uncertain alternative transcription] " + text,
-                    metadata={"source": "advanced_region", "original_block": index},
-                )
+        indices = set(owners[i1:i2])
+        if not indices and owners:
+            indices.add(owners[min(i1, len(owners) - 1)])
+        for index in indices:
+            differences.setdefault(index, []).extend(item[1] for item in right[j1:j2])
+    for index in sorted(differences):
+        block = page.blocks[index]
+        if str(block.metadata.get("source", "")).startswith("native"):
+            diagnostics.append(
+                {
+                    "page_idx": page.page_idx,
+                    "stage": "advanced_region",
+                    "status": "unresolved",
+                    "region": index,
+                    "reason": "native content preserved",
+                }
             )
-        _retain_uncertain(page, imagepath, "Independent verification disagrees with extraction")
-        return page
-    for index, text in replacements.items():
-        page.blocks[index].metadata["advanced_original_content"] = page.blocks[index].content
-        page.blocks[index].content = text
-        page.blocks[index].metadata["advanced_region_verified"] = True
+            continue
+        # For text, recover the whole block against context-bounded independent units.
+        expected = " ".join(differences[index])
+        if block.type not in _FORMULAS:
+            own_positions = [i for i, owner in enumerate(owners) if owner == index]
+            if own_positions:
+                mapping = SequenceMatcher(
+                    None, left, [x[0] for x in right], autojunk=False
+                ).get_opcodes()
+                selected = [
+                    right[j][1]
+                    for tag, a, b, c, d in mapping
+                    if b > own_positions[0] and a <= own_positions[-1]
+                    for j in range(c, d)
+                ]
+                expected = " ".join(selected)
+        await _recover(
+            pipeline,
+            page,
+            block,
+            index,
+            region_imagepath or imagepath,
+            diagnostics,
+            crop_pdf,
+            "advanced_region",
+            expected or None,
+        )
     diagnostics.append(
         {
             "page_idx": page.page_idx,
             "stage": "advanced_verification",
-            "status": "reconciled",
-            "regions": sorted(replacements),
+            "status": "disputed" if differences else "agreed",
+            "regions": sorted(differences),
         }
     )
     return page
@@ -367,79 +419,19 @@ async def verify_suspicious_regions(
     diagnostics: list[Diagnostic],
     crop_pdf: Callable[..., Path] | None = None,
 ) -> Page:
-    """Check only text regions with visible extraction problems or an explicit verify assessment."""
-    from .pipeline import PROMPTS
-
-    assess = page.metadata.get("assessment", {})
+    """Recover malformed content locally; ordinary text does not trigger a reread."""
     for index, block in enumerate(page.blocks):
-        if (
-            block.type not in {"text", "content", "abstract", "reference_content", "title"}
-            or not block.bbox
-            or str(block.metadata.get("source", "")).startswith("native")
-        ):
+        if block.type in _IGNORED or str(block.metadata.get("source", "")).startswith("native"):
             continue
         suspicious = (
-            assess.get("effort") == "verify" or "\ufffd" in block.content or "??" in block.content
+            formula_is_suspicious(block.content)
+            if block.type in _FORMULAS
+            else any(s in block.content for s in ("�", "???"))
         )
-        if not suspicious:
-            continue
-        with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
-            if crop_pdf:
-                box = [round(v * 1000) for v in block.bbox]
-                crop = crop_pdf(box=box, ordinal=index)
-            else:
-                with Image.open(imagepath) as image:
-                    width, height = image.size
-                    bounds = tuple(
-                        int(v * (width if i % 2 == 0 else height)) for i, v in enumerate(block.bbox)
-                    )
-                    crop = Path(directory) / "region.png"
-                    image.crop(cast(tuple[int, int, int, int], bounds)).save(crop)
-            try:
-                items = await pipeline._infer_valid(
-                    [crop],
-                    (PROMPTS / "region_ocr.txt")
-                    .read_text()
-                    .replace("{target_region}", "[0, 0, 1000, 1000]"),
-                    _region_text,
-                    diagnostics,
-                    page.page_idx,
-                    "standard_region",
-                    None,
-                )
-            except ValueError:
-                _retain_uncertain(
-                    page, imagepath, "Targeted region verification unavailable", block
-                )
-                diagnostics.append(
-                    {
-                        "page_idx": page.page_idx,
-                        "stage": "standard_verification",
-                        "status": "unresolved",
-                        "region": index,
-                    }
-                )
-                continue
-        if not _agree(block.content, items):
-            diagnostics.append(
-                {
-                    "page_idx": page.page_idx,
-                    "stage": "standard_verification",
-                    "status": "unresolved",
-                    "region": index,
-                }
+        if suspicious:
+            await _recover(
+                pipeline, page, block, index, imagepath, diagnostics, crop_pdf, "standard_region"
             )
-            _retain_uncertain(page, imagepath, "Targeted region verification disagrees", block)
-            continue
-        block.metadata["standard_region_verified"] = True
-        diagnostics.append(
-            {
-                "page_idx": page.page_idx,
-                "stage": "standard_verification",
-                "status": "agreed",
-                "region": index,
-            }
-        )
     return page
 
 

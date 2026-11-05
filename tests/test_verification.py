@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import TypeVar
 
 import pytest
 from PIL import Image
@@ -9,47 +9,24 @@ from mineru_like import pipeline as pipeline_module
 from mineru_like.config import Settings
 from mineru_like.contracts import Diagnostic
 from mineru_like.result import Block, Page
-from mineru_like.verification import verify_page
+from mineru_like.verification import (
+    canonical_math,
+    formula_is_suspicious,
+    verify_page,
+    verify_suspicious_regions,
+)
 
 T = TypeVar("T")
-
-
-@pytest.mark.asyncio
-async def test_small_text_comparison_includes_matching_header_numbers(tmp_path: Path) -> None:
-    from mineru_like.pipeline import Pipeline
-    from mineru_like.verification import verify_small_text_regions
-
-    items = [
-        {"category": "header", "bbox": [0, 0, 1000, 100], "content": "Journal 310 (2005) 253–265"},
-        {"category": "text", "bbox": [0, 120, 1000, 900], "content": "Small text body"},
-    ]
-
-    class Runtime:
-        async def infer(
-            self, images: list[Path], prompt: str, *, max_tokens: int | None = None
-        ) -> str:
-            return "Journal 310 (2005) 253–265 Small text body"
-
-    diagnostics = []
-    await verify_small_text_regions(
-        Pipeline(Settings(), Runtime()),
-        0,
-        input_items=items,
-        regions=[[0, 0, 1000, 1000]],
-        pdf_path=None,
-        image=Image.new("RGB", (200, 200), "white"),
-        workdir=tmp_path,
-        diagnostics=diagnostics,
-    )
-    assert diagnostics[-1]["status"] == "agreed"
 
 
 class Pipeline:
     settings = Settings()
 
-    def __init__(self, markdown: str | None, region: str | None = None) -> None:
-        self.markdown, self.region = markdown, region
-        self.stages = []
+    def __init__(self, markdown: str = "", region: str = "") -> None:
+        self.markdown = markdown
+        self.region = region
+        self.stages: list[str] = []
+        self.prompts: list[str] = []
 
     async def _infer_valid(
         self,
@@ -62,185 +39,101 @@ class Pipeline:
         recovery: Callable[[], Path] | None = None,
     ) -> T:
         self.stages.append(stage)
-        if stage == "advanced_markdown":
-            return validator(cast(str, self.markdown))
-        try:
-            import json
-
-            return validator(
-                " ".join(item["content"] for item in json.loads(cast(str, self.region)))
-            )
-        except (ValueError, TypeError):
-            return validator(cast(str, self.region))
+        self.prompts.append(prompt)
+        return validator(self.markdown if stage == "advanced_markdown" else self.region)
 
 
 @pytest.fixture
 def context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    for name in ("document_markdown.txt", "document_structured.txt", "region_ocr.txt"):
-        (tmp_path / name).write_text("prompt")
+    for name in ("document_markdown.txt", "region_ocr.txt", "formula_recognition.txt"):
+        (tmp_path / name).write_text(
+            "formula prompt" if name.startswith("formula") else "{target_region}"
+        )
     monkeypatch.setattr(pipeline_module, "PROMPTS", tmp_path)
     image = tmp_path / "page.png"
     Image.new("RGB", (100, 100), "white").save(image)
     return image
 
 
-@pytest.mark.asyncio
-async def test_benign_formatting_and_native_text_preserved(context: Path) -> None:
-    block = Block("text", "Revenue grew by 42 percent.", metadata={"source": "native"})
-    page = Page(0, [block])
-    diagnostics = []
-    result = await verify_page(
-        Pipeline("## Revenue grew by **42** percent"), page, context, diagnostics
-    )
-    assert result.blocks[0].content == "Revenue grew by 42 percent."
-    assert diagnostics[-1]["status"] == "agreed"
-    assert len(result.blocks) == 1
+def test_math_comparison_preserves_semantics() -> None:
+    assert canonical_math(r"$\dfrac{X_1}{y}$") == canonical_math(r"\[\frac{X_1}{y}\]")
+    for a, b in [
+        (r"X", r"x"),
+        (r"x+y", r"x-y"),
+        (r"x_1", r"x^1"),
+        (r"{ab}", r"ab"),
+        (r"\begin{matrix}a\\b\end{matrix}", r"\begin{matrix}ab\end{matrix}"),
+    ]:
+        assert canonical_math(a) != canonical_math(b)
+    assert formula_is_suspicious(r"\frac{a}")
+    assert formula_is_suspicious(r"x_{")
+    assert not formula_is_suspicious(r"x+\alpha")
 
 
 @pytest.mark.asyncio
-async def test_missing_table_cell_retains_uncertain_source_image(context: Path) -> None:
-    page = Page(0, [Block("table", "<table><tr><td>North</td><td>52</td></tr></table>")])
-    diagnostics = []
-    await verify_page(Pipeline("North | 53"), page, context, diagnostics)
-    assert page.blocks[-1].image_source
-    assert diagnostics[-1]["status"] == "unresolved"
-
-
-@pytest.mark.asyncio
-async def test_targeted_region_recovery_requires_independent_support(context: Path) -> None:
-    block = Block("text", "The value is 52", bbox=(0, 0, 1, 1), metadata={"source": "visual"})
-    page = Page(0, [block])
-    region = '[{"category":"text","content":"The value is 53","bbox":[0,0,999,999]}]'
-    pipeline = Pipeline("The value is 53", region)
-    await verify_page(pipeline, page, context, [])
-    assert page.blocks[0].content == "The value is 53"
-    assert page.blocks[0].metadata["advanced_original_content"] == "The value is 52"
-    assert pipeline.stages == ["advanced_markdown", "advanced_region"]
-
-
-@pytest.mark.asyncio
-async def test_native_disagreement_does_not_overwrite(context: Path) -> None:
-    block = Block("text", "The value is 52", bbox=(0, 0, 1, 1), metadata={"source": "native"})
-    page = Page(0, [block])
-    await verify_page(Pipeline("The value is 53"), page, context, [])
-    assert "The value is 52" in block.content
-    assert page.blocks[-1].image_source
-
-
-@pytest.mark.asyncio
-async def test_missing_word_in_table_cell_is_material_even_on_long_page(context: Path) -> None:
-    prose = " ".join(f"word{i}" for i in range(60))
-    page = Page(
-        0, [Block("text", prose), Block("table", "<table><tr><td>uniquevalue</td></tr></table>")]
-    )
-    await verify_page(Pipeline(prose), page, context, [])
-    assert page.blocks[-1].image_source
-
-
-@pytest.mark.asyncio
-async def test_formula_operator_difference_fails(context: Path) -> None:
-    page = Page(0, [Block("equation", r"$x+y$")])
-    await verify_page(Pipeline(r"$x-y$"), page, context, [])
-    assert page.blocks[-1].image_source
-
-
-@pytest.mark.asyncio
-async def test_table_words_in_wrong_cells_fail(context: Path) -> None:
-    page = Page(0, [Block("table", "<table><tr><td>red blue</td><td>green</td></tr></table>")])
-    await verify_page(Pipeline("| red | blue green |"), page, context, [])
-    assert page.blocks[-1].image_source
-
-
-@pytest.mark.asyncio
-async def test_standard_checks_only_flagged_regions(context: Path) -> None:
-    from mineru_like.verification import verify_suspicious_regions
-
-    region = '[{"category":"text","content":"uncertain text","bbox":[0,0,999,999]}]'
-    pipeline = Pipeline(None, region)
+async def test_formatting_does_not_trigger_recovery(context: Path) -> None:
+    pipeline = Pipeline(r"Intro $\tfrac{X}{y}$ end")
     page = Page(
         0,
-        [Block("text", "uncertain text", bbox=(0, 0, 1, 1), metadata={"source": "visual"})],
-        metadata={"assessment": {"effort": "visual"}},
+        [
+            Block("text", "Intro"),
+            Block("equation", r"$\frac{X}{y}$", bbox=(0, 0, 1, 1)),
+            Block("text", "end"),
+        ],
     )
-    await verify_suspicious_regions(pipeline, page, context, [])
-    assert pipeline.stages == []
-    page.metadata["assessment"]["effort"] = "verify"
-    await verify_suspicious_regions(pipeline, page, context, [])
-    assert pipeline.stages == ["standard_region"]
-    assert page.blocks[0].metadata["standard_region_verified"]
-
-
-class NewPipeline:
-    settings = Settings()
-
-    def __init__(self, markdown: str, region: str) -> None:
-        self.markdown, self.region = markdown, region
-
-    async def _infer_valid(
-        self,
-        images: list[Path],
-        prompt: str,
-        validator: Callable[[str], T],
-        diagnostics: list[Diagnostic],
-        page_idx: int,
-        stage: str,
-        recovery: Callable[[], Path] | None = None,
-    ) -> T:
-        return validator(self.markdown if stage == "advanced_markdown" else self.region)
+    await verify_page(pipeline, page, context, [])
+    assert pipeline.stages == ["advanced_markdown"]
+    assert len(page.blocks) == 3
 
 
 @pytest.mark.asyncio
-async def test_unresolved_number_retains_uncertain_text_and_evidence(tmp_path: Path) -> None:
-    path = tmp_path / "page.png"
-    Image.new("RGB", (100, 100), "white").save(path)
-    page = Page(0, [Block("text", "Value 52", bbox=(0, 0, 1, 1), metadata={"source": "visual"})])
-    diagnostics = []
-    await verify_page(NewPipeline("Value 53", "Value 54"), page, path, diagnostics)
-    assert page.blocks[0].metadata["uncertain"]
-    assert any("[Uncertain text:" in block.content for block in page.blocks)
-    assert page.blocks[-1].image_source and (tmp_path / page.blocks[-1].image_source).exists()
-    assert diagnostics[-1]["status"] == "unresolved"
+async def test_disputed_formula_only_recovers_target(context: Path) -> None:
+    pipeline = Pipeline(r"Intro $x-y$ end", r"$$x-y$$")
+    page = Page(
+        0,
+        [
+            Block("text", "Intro", bbox=(0, 0, 1, 0.2)),
+            Block("equation", r"$x+y$", bbox=(0, 0.2, 1, 0.5)),
+            Block("text", "end", bbox=(0, 0.5, 1, 1)),
+        ],
+    )
+    diagnostics: list[Diagnostic] = []
+    await verify_page(pipeline, page, context, diagnostics)
+    assert [b.content for b in page.blocks] == ["Intro", "$$x-y$$", "end"]
+    assert pipeline.stages == ["advanced_markdown", "advanced_region"]
+    assert pipeline.prompts[-1] == "formula prompt"
+    assert page.blocks[1].metadata["verification_original"] == "$x+y$"
+    assert diagnostics[-1]["regions"] == [1]
+    assert not list(context.parent.glob("images/*"))
 
 
 @pytest.mark.asyncio
-async def test_local_region_resolves_disagreement(tmp_path: Path) -> None:
-    path = tmp_path / "page.png"
-    Image.new("RGB", (100, 100), "white").save(path)
-    page = Page(0, [Block("text", "Value 52", bbox=(0, 0, 1, 1), metadata={"source": "visual"})])
-    await verify_page(NewPipeline("Value 53", "Value 53"), page, path, [])
-    assert page.blocks[0].content == "Value 53"
-    assert page.blocks[0].metadata["advanced_original_content"] == "Value 52"
+async def test_invalid_target_preserves_valid_original(context: Path) -> None:
+    pipeline = Pipeline(r"$x-y$", r"\frac{x}")
+    page = Page(0, [Block("equation", r"$x+y$", bbox=(0, 0, 1, 1))])
+    await verify_page(pipeline, page, context, [])
+    assert page.blocks[0].content == "$x+y$"
+    assert page.blocks[0].metadata["verification"]["status"] == "unresolved"
 
 
 @pytest.mark.asyncio
-async def test_reversed_sentence_is_unresolved(context: Path) -> None:
-    page = Page(0, [Block("text", "A causes B", metadata={"source": "native"})])
-    diagnostics = []
-    await verify_page(Pipeline("B causes A"), page, context, diagnostics)
-    assert diagnostics[-1]["status"] == "unresolved"
-    assert page.blocks[-1].image_source
+async def test_unreadable_formula_placeholder(context: Path) -> None:
+    pipeline = Pipeline(region=r"\frac{x}")
+    page = Page(0, [Block("equation", r"x_{", bbox=(0.7, 0.4, 0.9, 0.6))])
+    diagnostics: list[Diagnostic] = []
+    await verify_suspicious_regions(pipeline, page, context, diagnostics)
+    assert (
+        page.blocks[0].content == "[Unclear formula; p1, approx. middle-right; zoom if possible.]"
+    )
+    assert diagnostics[-1]["initial"] == r"x_{"
+    assert len(page.blocks) == 1
 
 
 @pytest.mark.asyncio
-async def test_swapped_table_cells_are_unresolved(context: Path) -> None:
-    page = Page(0, [Block("table", "<table><tr><td>A</td><td>B</td></tr></table>")])
-    diagnostics = []
-    await verify_page(Pipeline("| B | A |"), page, context, diagnostics)
-    assert diagnostics[-1]["status"] == "unresolved"
-
-
-@pytest.mark.asyncio
-async def test_unresolved_candidate_preserves_both_transcriptions(context: Path) -> None:
-    page = Page(0, [Block("text", "Value 52", bbox=(0, 0, 1, 1), metadata={"source": "visual"})])
-    await verify_page(NewPipeline("Value 53", "Value 54"), page, context, [])
-    assert page.blocks[0].content == "Value 52"
-    assert page.blocks[0].metadata["advanced_candidate_content"] == "Value 54"
-    assert any("Value 54" in block.content for block in page.blocks[1:])
-
-
-def test_agreement_preserves_signs_and_line_hyphenation() -> None:
-    from mineru_like.verification import _agree
-
-    assert _agree("inter-\nnational 1,000 kg", "international 1000 kg")
-    assert not _agree("-5 kg", "5 kg")
-    assert not _agree("x + y", "x - y")
+async def test_competing_readings_stay_in_metadata(context: Path) -> None:
+    pipeline = Pipeline(r"$x-y$", r"$x*z$")
+    page = Page(0, [Block("equation", r"$x+y$", bbox=(0, 0, 1, 1))])
+    await verify_page(pipeline, page, context, [])
+    assert page.blocks[0].content == "$x+y$"
+    assert page.blocks[0].metadata["verification"]["targeted"] == "$x*z$"
+    assert len(page.blocks) == 1
