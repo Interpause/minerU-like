@@ -46,6 +46,7 @@ Status after the **Unreleased** runtime/recovery fixes; the `0.1.0` tag remains 
 
 ## Operations and optional extensions
 
+- [ ] Migrate the Python codebase to full type annotations in a dedicated effort, choosing and introducing a type checker then. Current work should type changed public interfaces and shared contracts without expanding into an unrelated migration.
 - [ ] Extend total disk accounting to temporary renders, conversion outputs, and retained failure diagnostics if a strict whole-data-directory budget is required. Current admission accounting covers upload reservations and published ZIPs.
 - [ ] Bound or rotate managed llama-server log storage and cap startup-failure readback. The current temporary process log can grow for the lifetime of the child.
 - [ ] Improve renderer and tool diagnostics with more deployment-specific failure cases while retaining bounded logs and owned-instance cleanup.
