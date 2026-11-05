@@ -287,7 +287,7 @@ def create_app(
         if not store.one("SELECT id FROM jobs WHERE id=?", (job_id,)):
             raise HTTPException(404, "Job not found")
         await worker.cancel(job_id)
-        # Retention excludes active work; the already checked job survives cancellation.
+        # This route assumes the previously found record survives the cancellation await.
         job = cast(SQLiteRecord, store.one("SELECT status FROM jobs WHERE id=?", (job_id,)))
         return {"job_id": job_id, "status": job["status"]}
 

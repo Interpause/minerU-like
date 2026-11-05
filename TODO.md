@@ -1,6 +1,6 @@
 # Remaining work
 
-Status after the **Unreleased** runtime/recovery fixes; the `0.1.0` tag remains unchanged. This list distinguishes missing implementation from implemented behavior that still needs real-world validation. Items are not a promise that every optional extension will be added. Completed capabilities and release evidence are recorded in [CHANGELOG.md](CHANGELOG.md).
+Status for **0.2.0**; the `0.1.0` tag remains unchanged. This list distinguishes missing implementation from implemented behavior that still needs real-world validation. Items are not a promise that every optional extension will be added. Completed capabilities and release evidence are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Deployment validation — highest priority
 
@@ -46,7 +46,8 @@ Status after the **Unreleased** runtime/recovery fixes; the `0.1.0` tag remains 
 
 ## Operations and optional extensions
 
-- [ ] Migrate the Python codebase to full type annotations in a dedicated effort, choosing and introducing a type checker then. Current work should type changed public interfaces and shared contracts without expanding into an unrelated migration.
+- [x] Annotate owned Python source, tests and scripts; introduce advisory ty checks and shared structural contracts. See [development](docs/DEVELOPMENT.md) for intentional dynamic boundaries and policy.
+- [ ] Handle retention racing cancellation of an already-terminal job: the final status lookup can lose a record deleted during the cancellation await.
 - [ ] Extend total disk accounting to temporary renders, conversion outputs, and retained failure diagnostics if a strict whole-data-directory budget is required. Current admission accounting covers upload reservations and published ZIPs.
 - [ ] Bound or rotate managed llama-server log storage and cap startup-failure readback. The current temporary process log can grow for the lifetime of the child.
 - [ ] Improve renderer and tool diagnostics with more deployment-specific failure cases while retaining bounded logs and owned-instance cleanup.

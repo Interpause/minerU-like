@@ -6,10 +6,12 @@ This file supplements the [root guidance](../AGENTS.md) for `src/`.
 
 - Favor cohesive modules, descriptive names, explicit contracts and focused
   helpers. Extract code for clarity or reuse, not to build a speculative framework.
-- Maintain comprehensive annotations in source, tests and scripts. Use shared
-  protocols for cross-module contracts and local `Any` escapes where necessary;
-  the advisory type checker is not a strict gate or a diagnostic quota. Follow the Python constraints and Ruff settings in
-  [pyproject.toml](../pyproject.toml).
+- Preserve useful annotations and type changed interfaces and shared contracts.
+  The source, tests and scripts have comprehensive annotations; a focused task
+  does not require a wider typing cleanup. Prefer small structural protocols and
+  local escapes at dynamic boundaries. The separate ty check is advisory, without
+  strictness quotas or a mandatory gate. Follow the Python constraints and Ruff
+  settings in [pyproject.toml](../pyproject.toml).
 - Prefer minimal comments. Explain surprising constraints when names and structure
   cannot carry the reasoning; avoid narrating obvious code or duplicating types.
 - Use distinct error categories at boundaries. Keep malformed model output,
