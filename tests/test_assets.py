@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -6,13 +7,18 @@ from mineru_like.assets import register_assets, verify_assets
 from mineru_like.config import RuntimeSettings, Settings
 
 
-def test_setup_checksums_and_changes(tmp_path):
+def test_setup_checksums_and_changes(tmp_path: Path) -> None:
     paths = {}
     for name in ("binary", "model", "mmproj"):
         path = tmp_path / name
         path.write_bytes(b"GGUFexample" if name != "binary" else b"ELFexample")
         paths[name] = path
-    settings = Settings(data_dir=tmp_path / "data", runtime=RuntimeSettings(**paths))
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        runtime=RuntimeSettings(
+            binary=paths["binary"], model=paths["model"], mmproj=paths["mmproj"]
+        ),
+    )
     manifest = register_assets(settings)
     assert set(json.loads(manifest.read_text())) == set(paths)
     verify_assets(settings)
@@ -21,7 +27,7 @@ def test_setup_checksums_and_changes(tmp_path):
         verify_assets(settings)
 
 
-def test_setup_rejects_lfs_pointer(tmp_path):
+def test_setup_rejects_lfs_pointer(tmp_path: Path) -> None:
     path = tmp_path / "pointer"
     path.write_bytes(b"version https://git-lfs.github.com/spec/v1\n")
     settings = Settings(

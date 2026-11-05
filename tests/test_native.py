@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from docx import Document
 from PIL import Image
@@ -7,7 +9,7 @@ from mineru_like.native import _inference_image
 from mineru_like.pipeline import Pipeline
 
 
-def test_svg_inference_is_bounded_and_preserves_source(tmp_path):
+def test_svg_inference_is_bounded_and_preserves_source(tmp_path: Path) -> None:
     source = tmp_path / "shape.svg"
     original = b'<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="2000"><rect width="2000" height="2000" fill="black"/></svg>'
     source.write_bytes(original)
@@ -28,7 +30,7 @@ def test_svg_inference_is_bounded_and_preserves_source(tmp_path):
         '<!DOCTYPE svg [<!ENTITY x "abc">]><text>&x;</text>',
     ],
 )
-def test_svg_rejects_resources_and_entities(tmp_path, body):
+def test_svg_rejects_resources_and_entities(tmp_path: Path, body: str) -> None:
     source = tmp_path / "bad.svg"
     source.write_text(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{body}</svg>'
@@ -38,7 +40,9 @@ def test_svg_rejects_resources_and_entities(tmp_path, body):
 
 
 @pytest.mark.asyncio
-async def test_native_svg_reaches_inference_and_remains_an_asset(tmp_path, monkeypatch):
+async def test_native_svg_reaches_inference_and_remains_an_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import docvortex
 
     svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>'
@@ -86,7 +90,7 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_real_csv_conversion(tmp_path):
+async def test_real_csv_conversion(tmp_path: Path) -> None:
     path = tmp_path / "sample.csv"
     path.write_text("name,value\nalpha,42\n")
     result = await Pipeline(Settings(), None).parse(
@@ -102,7 +106,7 @@ async def test_real_csv_conversion(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_inline_svg_is_not_silently_dropped(tmp_path):
+async def test_inline_svg_is_not_silently_dropped(tmp_path: Path) -> None:
     source = tmp_path / "inline.html"
     source.write_text(
         '<html><body><p>Text</p><svg width="20" height="20"><rect width="20" height="20"/></svg></body></html>'
@@ -114,14 +118,14 @@ async def test_inline_svg_is_not_silently_dropped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_native_embedded_raster_formula_is_supplemental(tmp_path):
+async def test_native_embedded_raster_formula_is_supplemental(tmp_path: Path) -> None:
     image = tmp_path / "formula.png"
     Image.new("RGB", (50, 30), "black").save(image)
     source = tmp_path / "formula.docx"
     document = Document()
     document.add_paragraph("Original prose")
     document.add_picture(str(image))
-    document.save(source)
+    document.save(str(source))
 
     class Runtime:
         async def infer(self, images, prompt, *, max_tokens=None):

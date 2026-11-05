@@ -11,7 +11,7 @@ from mineru_like.result import Block, DocumentResult, Page
 
 
 @pytest.mark.asyncio
-async def test_delivery_does_not_add_model_calls(tmp_path):
+async def test_delivery_does_not_add_model_calls(tmp_path: Path) -> None:
     image = Image.new("RGB", (300, 300), "white")
     ImageDraw.Draw(image).rectangle((30, 30, 270, 270), outline="black", width=3)
     source = tmp_path / "input.png"
@@ -48,7 +48,7 @@ async def test_delivery_does_not_add_model_calls(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_html_only_asset_references_are_rewritten(tmp_path):
+async def test_html_only_asset_references_are_rewritten(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     Image.new("RGB", (400, 400), "white").save(source, compress_level=0)
     block = Block("table", '<table><tr><td><img src="images/source.png"></td></tr></table>')
@@ -60,11 +60,12 @@ async def test_html_only_asset_references_are_rewritten(tmp_path):
     await optimize_assets(result, Settings(), tmp_path / "delivery")
     assert len(result.assets) == 1
     name = next(iter(result.assets))
+    assert result.markdown_override is not None
     assert name in block.content and name in result.markdown_override
     result.validate()
 
 
-def test_missing_html_asset_cannot_be_published(tmp_path):
+def test_missing_html_asset_cannot_be_published(tmp_path: Path) -> None:
     result = DocumentResult(
         [Page(0, [Block("table", '<table><tr><td><img src="missing.png"></td></tr></table>')])]
     )
@@ -73,7 +74,7 @@ def test_missing_html_asset_cannot_be_published(tmp_path):
     assert not (tmp_path / "broken.zip").exists()
 
 
-def test_rendered_region_basenames_cannot_collide_in_plugin_cache(tmp_path):
+def test_rendered_region_basenames_cannot_collide_in_plugin_cache(tmp_path: Path) -> None:
     first, second = tmp_path / "first.png", tmp_path / "second.png"
     Image.new("RGB", (20, 20), "red").save(first)
     Image.new("RGB", (20, 20), "blue").save(second)
@@ -82,5 +83,7 @@ def test_rendered_region_basenames_cannot_collide_in_plugin_cache(tmp_path):
     result = DocumentResult([Page(0, blocks)], dict(zip(names, [first, second])))
     finalize_asset_names(result)
     assert len({Path(name).name for name in result.assets}) == 2
-    assert all(block.image_source in block.content for block in blocks)
+    assert all(
+        block.image_source is not None and block.image_source in block.content for block in blocks
+    )
     result.validate()

@@ -7,15 +7,13 @@ from pathlib import Path
 RUNNER = Path(__file__).resolve().parents[1] / "scripts/run_tests.py"
 
 
-def test_full_run_reports_missing_plugin():
-    result = subprocess.run(
-        [sys.executable, str(RUNNER), "--all"], capture_output=True, text=True
-    )
+def test_full_run_reports_missing_plugin() -> None:
+    result = subprocess.run([sys.executable, str(RUNNER), "--all"], capture_output=True, text=True)
     assert result.returncode != 0
     assert "--plugin-root" in result.stderr
 
 
-def test_standard_run_passes_pytest_arguments(tmp_path):
+def test_standard_run_passes_pytest_arguments(tmp_path: Path) -> None:
     fixture = tmp_path / "test_fixture.py"
     fixture.write_text("def test_example():\n    assert True\n")
     result = subprocess.run(
@@ -25,7 +23,7 @@ def test_standard_run_passes_pytest_arguments(tmp_path):
     assert "1 passed" in result.stdout
 
 
-def test_full_run_rejects_skips(tmp_path):
+def test_full_run_rejects_skips(tmp_path: Path) -> None:
     # Exercise the pytest hook without requiring live services or external software.
     fixture = tmp_path / "test_fixture.py"
     fixture.write_text('import pytest\n\ndef test_example():\n    pytest.skip("reason")\n')

@@ -1,15 +1,17 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from mineru_like.config import RuntimeSettings, Settings, load_settings
 
 
-def test_no_lower_precision_kv():
+def test_no_lower_precision_kv() -> None:
     with pytest.raises(ValidationError):
         RuntimeSettings(kv_cache="q4_0")
 
 
-def test_toml_and_unknown_option(tmp_path):
+def test_toml_and_unknown_option(tmp_path: Path) -> None:
     config = tmp_path / "settings.toml"
     config.write_text('[runtime]\nmode="external"\nbase_url="http://127.0.0.1:9000"\n')
     assert load_settings(config).runtime.mode == "external"
@@ -18,7 +20,9 @@ def test_toml_and_unknown_option(tmp_path):
         load_settings(config)
 
 
-def test_default_data_layout_and_preserved_token_limits(tmp_path, monkeypatch):
+def test_default_data_layout_and_preserved_token_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     settings = load_settings()
     assert Settings().data_dir.name == "data"
@@ -36,7 +40,9 @@ def test_default_data_layout_and_preserved_token_limits(tmp_path, monkeypatch):
     assert settings.runtime.request_timeout is None
 
 
-def test_paths_follow_config_location_and_custom_data_directory(tmp_path, monkeypatch):
+def test_paths_follow_config_location_and_custom_data_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     folder = tmp_path / "config"
     folder.mkdir()
     path = folder / "local.toml"
@@ -49,12 +55,12 @@ def test_paths_follow_config_location_and_custom_data_directory(tmp_path, monkey
 
 
 @pytest.mark.parametrize("slots", [0, -1])
-def test_invalid_parallel_slots(slots):
+def test_invalid_parallel_slots(slots) -> None:
     with pytest.raises(ValidationError):
         RuntimeSettings(parallel_slots=slots)
 
 
-def test_binary_discovery_and_ambiguity(tmp_path, monkeypatch):
+def test_binary_discovery_and_ambiguity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     first = tmp_path / "data/b123/llama-server"
     first.parent.mkdir(parents=True)
@@ -71,6 +77,6 @@ def test_binary_discovery_and_ambiguity(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("value", [0, -2])
-def test_invalid_image_max_tokens(value):
+def test_invalid_image_max_tokens(value) -> None:
     with pytest.raises(ValidationError):
         RuntimeSettings(image_max_tokens=value)

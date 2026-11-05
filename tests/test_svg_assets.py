@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 
 import pymupdf
 import pytest
@@ -9,7 +10,9 @@ from mineru_like.result import Block, DocumentResult, Page
 from mineru_like.svg_assets import improve_pdf_assets
 
 
-def result_for(tmp_path, box=(0.2, 0.2, 0.8, 0.8)):
+def result_for(
+    tmp_path: Path, box: tuple[float, float, float, float] = (0.2, 0.2, 0.8, 0.8)
+) -> tuple[DocumentResult, Block]:
     path = tmp_path / "original.png"
     Image.new("RGB", (50, 50), "white").save(path)
     block = Block(
@@ -18,11 +21,12 @@ def result_for(tmp_path, box=(0.2, 0.2, 0.8, 0.8)):
         image_source="images/figure.png",
         metadata={"source_pdf": True, "source_page": 0, "source_bbox": box},
     )
+    assert block.image_source is not None
     return DocumentResult([Page(0, [block])], {block.image_source: path}), block
 
 
 @pytest.mark.asyncio
-async def test_isolated_svg_removes_outside_text(tmp_path):
+async def test_isolated_svg_removes_outside_text(tmp_path: Path) -> None:
     pdf = pymupdf.open()
     page = pdf.new_page(width=500, height=500)
     page.insert_text((30, 30), "PRIVATE OUTSIDE")
@@ -41,7 +45,7 @@ async def test_isolated_svg_removes_outside_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_exact_jpeg_extracted_without_raster_tracing(tmp_path):
+async def test_exact_jpeg_extracted_without_raster_tracing(tmp_path: Path) -> None:
     image = Image.new("RGB", (100, 100), "white")
     stream = io.BytesIO()
     image.save(stream, format="JPEG", quality=80)
@@ -59,7 +63,7 @@ async def test_exact_jpeg_extracted_without_raster_tracing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_partial_text_falls_back_to_raster(tmp_path):
+async def test_partial_text_falls_back_to_raster(tmp_path: Path) -> None:
     pdf = pymupdf.open()
     page = pdf.new_page(width=500, height=500)
     page.insert_text((95, 200), "Crosses figure edge")
@@ -73,7 +77,7 @@ async def test_partial_text_falls_back_to_raster(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_diagram_label_remains_text_when_rendering_matches(tmp_path):
+async def test_diagram_label_remains_text_when_rendering_matches(tmp_path: Path) -> None:
     pdf = pymupdf.open()
     page = pdf.new_page(width=500, height=500)
     page.draw_rect(pymupdf.Rect(110, 110, 390, 390), color=(0, 0, 0), width=1)
@@ -92,7 +96,7 @@ async def test_diagram_label_remains_text_when_rendering_matches(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rotated_page_figure_is_validated_or_falls_back(tmp_path):
+async def test_rotated_page_figure_is_validated_or_falls_back(tmp_path: Path) -> None:
     pdf = pymupdf.open()
     page = pdf.new_page(width=500, height=500)
     page.draw_rect(pymupdf.Rect(110, 110, 390, 390), color=(0, 0, 0), width=2)
@@ -106,7 +110,7 @@ async def test_rotated_page_figure_is_validated_or_falls_back(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_private_source_pdf_and_html_references(tmp_path):
+async def test_private_source_pdf_and_html_references(tmp_path: Path) -> None:
     pdf = pymupdf.open()
     page = pdf.new_page(width=500, height=500)
     page.draw_rect(pymupdf.Rect(110, 110, 390, 390), color=(0, 0, 0), width=2)
@@ -125,7 +129,7 @@ async def test_private_source_pdf_and_html_references(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mixed_embedded_image_and_vector_stays_self_contained(tmp_path):
+async def test_mixed_embedded_image_and_vector_stays_self_contained(tmp_path: Path) -> None:
     image = io.BytesIO()
     Image.new("RGB", (10, 10), "red").save(image, format="PNG")
     pdf = pymupdf.open()
@@ -143,7 +147,7 @@ async def test_mixed_embedded_image_and_vector_stays_self_contained(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_full_page_scan_never_embedded_in_cropped_svg(tmp_path):
+async def test_full_page_scan_never_embedded_in_cropped_svg(tmp_path: Path) -> None:
     stream = io.BytesIO()
     Image.new("RGB", (100, 100), "yellow").save(stream, format="JPEG")
     pdf = pymupdf.open()
@@ -160,7 +164,9 @@ async def test_full_page_scan_never_embedded_in_cropped_svg(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_waits_for_worker_and_prevents_publication(tmp_path, monkeypatch):
+async def test_cancellation_waits_for_worker_and_prevents_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import asyncio
     import threading
 

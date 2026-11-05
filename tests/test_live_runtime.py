@@ -6,7 +6,9 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -19,7 +21,9 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def live_runtime(tmp_path_factory):
+async def live_runtime(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[tuple[InferenceRuntime, Path, dict[str, Any]]]:
     config = os.environ.get("MINERU_TEST_RUNTIME_CONFIG")
     if not config:
         pytest.skip("set MINERU_TEST_RUNTIME_CONFIG to run actual model inference")
@@ -59,7 +63,9 @@ async def live_runtime(tmp_path_factory):
         (destination / "live-runtime.json").write_text(json.dumps(evidence, indent=2) + "\n")
 
 
-async def test_configured_eos_tokens_terminate(live_runtime):
+async def test_configured_eos_tokens_terminate(
+    live_runtime: tuple[InferenceRuntime, Path, dict[str, Any]],
+) -> None:
     runtime, _, evidence = live_runtime
     # OvisOCR3 generation_config.json lists both tokens. Force each as the
     # next token through llama.cpp's native endpoint to test EOG recognition,
@@ -91,7 +97,9 @@ async def test_configured_eos_tokens_terminate(live_runtime):
     evidence["eos_results"] = results
 
 
-async def test_live_slots_queued_images_and_memory(live_runtime):
+async def test_live_slots_queued_images_and_memory(
+    live_runtime: tuple[InferenceRuntime, Path, dict[str, Any]],
+) -> None:
     runtime, folder, evidence = live_runtime
     source = folder / "page.png"
     prompt = (Path(__file__).parents[1] / "src/mineru_like/prompts/plain_ocr.txt").read_text()
@@ -104,7 +112,7 @@ async def test_live_slots_queued_images_and_memory(live_runtime):
     peak = 0
     finished = asyncio.Event()
 
-    def memory():
+    def memory() -> int:
         if runtime.device != "cuda" or runtime._process is None:
             return 0
         result = subprocess.run(
@@ -127,7 +135,7 @@ async def test_live_slots_queued_images_and_memory(live_runtime):
             default=0,
         )
 
-    async def monitor():
+    async def monitor() -> None:
         nonlocal peak
         if runtime.device == "cuda" and not shutil.which("nvidia-smi"):
             raise AssertionError("nvidia-smi is required to measure the live CUDA memory budget")
@@ -162,7 +170,9 @@ async def test_live_slots_queued_images_and_memory(live_runtime):
         assert peak <= 5120, f"GPU peak {peak} MiB exceeds the 5 GiB headroom target"
 
 
-async def test_live_cancellation_keeps_sibling_and_server(live_runtime):
+async def test_live_cancellation_keeps_sibling_and_server(
+    live_runtime: tuple[InferenceRuntime, Path, dict[str, Any]],
+) -> None:
     runtime, folder, evidence = live_runtime
     source = folder / "page.png"
     prompt = (Path(__file__).parents[1] / "src/mineru_like/prompts/plain_ocr.txt").read_text()

@@ -25,7 +25,7 @@ def settings(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_optimizes_and_updates_all_references(tmp_path):
+async def test_optimizes_and_updates_all_references(tmp_path: Path) -> None:
     image = Image.new("RGB", (400, 400), "white")
     ImageDraw.Draw(image).line((0, 0, 399, 399), fill="black")
     source = tmp_path / "source.png"
@@ -39,6 +39,8 @@ async def test_optimizes_and_updates_all_references(tmp_path):
     )
     await optimize_assets(result, settings(), tmp_path)
     assert source.read_bytes() == original
+    assert block.image_source is not None
+    assert result.markdown_override is not None
     assert block.image_source in result.assets
     assert block.image_source in block.content
     assert block.image_source in result.markdown_override
@@ -50,7 +52,7 @@ async def test_optimizes_and_updates_all_references(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_animation_and_unreferenced_asset_retained(tmp_path):
+async def test_animation_and_unreferenced_asset_retained(tmp_path: Path) -> None:
     animated = tmp_path / "animated.gif"
     Image.new("RGB", (20, 20), "red").save(
         animated,
@@ -71,7 +73,7 @@ async def test_animation_and_unreferenced_asset_retained(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_missing_encoder_is_reported(tmp_path, monkeypatch):
+async def test_missing_encoder_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("mineru_like.compression.shutil.which", lambda _: None)
     result = DocumentResult([Page(0, [Block("text", "hello")])])
     await optimize_assets(result, settings(), tmp_path)
@@ -79,7 +81,9 @@ async def test_missing_encoder_is_reported(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_real_cwebp_preset_if_available(tmp_path, monkeypatch):
+async def test_real_cwebp_preset_if_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import os
     import shutil
     import subprocess
@@ -109,7 +113,7 @@ async def test_real_cwebp_preset_if_available(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_minimum_savings_retains_small_original(tmp_path):
+async def test_minimum_savings_retains_small_original(tmp_path: Path) -> None:
     source = tmp_path / "small.png"
     Image.new("RGB", (1, 1), "white").save(source, optimize=True)
     result = DocumentResult(
@@ -121,7 +125,7 @@ async def test_minimum_savings_retains_small_original(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_jpeg_diagram_and_photo_are_both_tried(tmp_path):
+async def test_jpeg_diagram_and_photo_are_both_tried(tmp_path: Path) -> None:
     import os
 
     binary = os.environ.get("MINERU_TEST_CWEBP")
@@ -147,7 +151,9 @@ async def test_jpeg_diagram_and_photo_are_both_tried(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_best_lossless_encoding_meets_savings_threshold(tmp_path, monkeypatch):
+async def test_best_lossless_encoding_meets_savings_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import io
 
     monkeypatch.setattr("mineru_like.compression.shutil.which", lambda _: None)
@@ -166,12 +172,13 @@ async def test_best_lossless_encoding_meets_savings_threshold(tmp_path, monkeypa
     block = Block("image", "", image_source="large.png")
     result = DocumentResult([Page(0, [block])], {"large.png": source})
     await optimize_assets(result, settings(), tmp_path)
+    assert block.image_source is not None
     assert result.assets[block.image_source].stat().st_size == min(sizes)
     assert min(sizes) <= source.stat().st_size * 0.9
 
 
 @pytest.mark.asyncio
-async def test_cancel_stops_owned_encoder_and_does_not_publish(tmp_path):
+async def test_cancel_stops_owned_encoder_and_does_not_publish(tmp_path: Path) -> None:
     import asyncio
     import os
 
@@ -204,7 +211,7 @@ async def test_cancel_stops_owned_encoder_and_does_not_publish(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_shared_asset_uses_most_conservative_classification(tmp_path):
+async def test_shared_asset_uses_most_conservative_classification(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     Image.new("RGB", (40, 40), "white").save(source, compress_level=0)
     blocks = [
@@ -217,7 +224,9 @@ async def test_shared_asset_uses_most_conservative_classification(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_color_signaled_png_trials_all_qualities_and_retains_chunks(tmp_path, monkeypatch):
+async def test_color_signaled_png_trials_all_qualities_and_retains_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from PIL.PngImagePlugin import PngInfo
 
     from mineru_like.compression import _color_chunks
@@ -246,13 +255,14 @@ async def test_color_signaled_png_trials_all_qualities_and_retains_chunks(tmp_pa
     await optimize_assets(result, settings(cwebp_binary=binary), tmp_path)
     assert len(calls) == 4
     assert all(command[command.index("-metadata") + 1] == "icc,exif" for command in calls)
+    assert block.image_source is not None
     output = result.assets[block.image_source]
     assert output != source and output.suffix == ".png"
     assert _color_chunks(output.read_bytes()) == _color_chunks(source.read_bytes())
 
 
 @pytest.mark.asyncio
-async def test_oriented_jpeg_candidates_keep_exif_and_pixel_dimensions(tmp_path):
+async def test_oriented_jpeg_candidates_keep_exif_and_pixel_dimensions(tmp_path: Path) -> None:
     import os
     import shutil
 
@@ -266,6 +276,7 @@ async def test_oriented_jpeg_candidates_keep_exif_and_pixel_dimensions(tmp_path)
     block = Block("image", "", image_source="oriented.jpg")
     result = DocumentResult([Page(0, [block])], {"oriented.jpg": source})
     await optimize_assets(result, settings(cwebp_binary=Path(binary) if binary else None), tmp_path)
+    assert block.image_source is not None
     assert result.assets[block.image_source] != source
     with Image.open(result.assets[block.image_source]) as output:
         assert output.size == (400, 300)

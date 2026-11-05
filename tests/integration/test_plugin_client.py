@@ -23,7 +23,9 @@ from mineru_like.result import Block, DocumentResult, Page
     "tier,force_ocr",
     [("standard", False), ("advanced", False), ("flash", False), ("basic", True), ("auto", True)],
 )
-async def test_plugin_client_lifecycle(tmp_path, asset_format, tier, force_ocr):
+async def test_plugin_client_lifecycle(
+    tmp_path: Path, asset_format: str, tier: str, force_ocr: bool
+) -> None:
     plugin = os.environ.get("TEST_PLUGIN_ROOT")
     fflate = os.environ.get("FFLATE_MODULE")
     typescript = os.environ.get("TYPESCRIPT_MODULE")
@@ -42,7 +44,9 @@ async def test_plugin_client_lifecycle(tmp_path, asset_format, tier, force_ocr):
 
     requested_tier = tier
 
-    async def parser(*, input_path, filename, ocr_mode, tier, workdir):
+    async def parser(
+        *, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
+    ) -> DocumentResult:
         assert input_path.read_bytes() == b"%PDF-test-fixture"
         assert filename == "fixture.pdf"
         assert ocr_mode == ("ocr" if force_ocr else "auto")

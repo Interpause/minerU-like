@@ -25,7 +25,9 @@ def settings(**kwargs):
 
 
 @pytest.mark.asyncio
-async def test_system_conversion_is_staged_and_uses_private_profile(tmp_path, monkeypatch):
+async def test_system_conversion_is_staged_and_uses_private_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     renderer = LibreOfficeRenderer(settings())
     commands = []
 
@@ -49,7 +51,9 @@ async def test_system_conversion_is_staged_and_uses_private_profile(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_flatpak_uses_instance_scoped_and_job_options(tmp_path, monkeypatch):
+async def test_flatpak_uses_instance_scoped_and_job_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     renderer = LibreOfficeRenderer(settings(mode="flatpak"))
     monkeypatch.setattr("mineru_like.libreoffice.shutil.which", lambda _: "/usr/bin/flatpak")
     commands = []
@@ -75,14 +79,16 @@ async def test_flatpak_uses_instance_scoped_and_job_options(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_timeout_reaps_process():
+async def test_timeout_reaps_process() -> None:
     renderer = LibreOfficeRenderer(settings(timeout=0.05))
     with pytest.raises(asyncio.TimeoutError):
         await renderer._run(["sleep", "10"])
 
 
 @pytest.mark.asyncio
-async def test_chart_supplement_preserves_cells_and_marks_unmatched(tmp_path, monkeypatch):
+async def test_chart_supplement_preserves_cells_and_marks_unmatched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from openpyxl import Workbook
     from openpyxl.chart import BarChart, Reference
 
@@ -149,7 +155,7 @@ async def test_chart_supplement_preserves_cells_and_marks_unmatched(tmp_path, mo
     result.validate()
 
 
-def test_spreadsheet_regions_preserve_detail_and_coordinates(tmp_path):
+def test_spreadsheet_regions_preserve_detail_and_coordinates(tmp_path: Path) -> None:
     import pymupdf as fitz
 
     from mineru_like.config import Settings
@@ -176,7 +182,9 @@ def test_spreadsheet_regions_preserve_detail_and_coordinates(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_real_flatpak_smoke_when_requested(tmp_path, monkeypatch):
+async def test_real_flatpak_smoke_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import os
 
     if os.environ.get("MINERU_LIKE_TEST_FLATPAK") != "1":
@@ -188,7 +196,7 @@ async def test_real_flatpak_smoke_when_requested(tmp_path, monkeypatch):
     path = tmp_path / "source.docx"
     document = Document()
     document.add_paragraph("LibreOffice smoke test")
-    document.save(path)
+    document.save(str(path))
     renderer = LibreOfficeRenderer(LibreOfficeSettings(mode="flatpak"))
     assert (await renderer.probe())["available"]
     output = await renderer.convert(path, "docx", tmp_path / "work")
@@ -196,7 +204,9 @@ async def test_real_flatpak_smoke_when_requested(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_native_failure_fallback_labels_visual_provenance(tmp_path, monkeypatch):
+async def test_native_failure_fallback_labels_visual_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import docvortex
 
     from mineru_like.config import Settings
@@ -229,7 +239,7 @@ async def test_native_failure_fallback_labels_visual_provenance(tmp_path, monkey
         await parse_native(source, "xlsx", workdir, pipeline)
 
 
-def test_ooxml_word_inventory_ignores_empty_and_reads_slide_text(tmp_path):
+def test_ooxml_word_inventory_ignores_empty_and_reads_slide_text(tmp_path: Path) -> None:
     from pptx import Presentation
     from pptx.util import Inches
 
@@ -238,16 +248,16 @@ def test_ooxml_word_inventory_ignores_empty_and_reads_slide_text(tmp_path):
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     path = tmp_path / "slides.pptx"
-    presentation.save(path)
+    presentation.save(str(path))
     assert _ooxml_word_count(path, "pptx") == 0
     shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1))
     shape.text_frame.text = "visual source contains words"
-    presentation.save(path)
+    presentation.save(str(path))
     assert _ooxml_word_count(path, "pptx") == 4
 
 
 @pytest.mark.asyncio
-async def test_renderer_redacts_and_bounds_process_diagnostics():
+async def test_renderer_redacts_and_bounds_process_diagnostics() -> None:
     import sys
 
     renderer = LibreOfficeRenderer(settings())
@@ -264,7 +274,7 @@ async def test_renderer_redacts_and_bounds_process_diagnostics():
     assert len(renderer.last_diagnostic) <= 2048
 
 
-def test_presentation_table_is_not_classified_as_complex_drawing(tmp_path):
+def test_presentation_table_is_not_classified_as_complex_drawing(tmp_path: Path) -> None:
     from pptx import Presentation
     from pptx.util import Inches
 
@@ -274,13 +284,15 @@ def test_presentation_table_is_not_classified_as_complex_drawing(tmp_path):
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(2))
     path = tmp_path / "table.pptx"
-    presentation.save(path)
+    presentation.save(str(path))
     unsupported, _, _ = _inventory(path)
     assert not unsupported
 
 
 @pytest.mark.asyncio
-async def test_native_chart_without_body_uses_visual_supplement(tmp_path, monkeypatch):
+async def test_native_chart_without_body_uses_visual_supplement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import docvortex
 
     from mineru_like.config import Settings

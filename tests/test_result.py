@@ -7,7 +7,7 @@ import pytest
 from mineru_like.result import Block, DocumentResult, Page
 
 
-def test_plugin_artifact_retains_generated_caption(tmp_path):
+def test_plugin_artifact_retains_generated_caption(tmp_path: Path) -> None:
     image = tmp_path / "figure.png"
     image.write_bytes(b"source crop")
     description = "[AI-generated image description; supplemental] A plot."
@@ -39,12 +39,12 @@ def test_plugin_artifact_retains_generated_caption(tmp_path):
 @pytest.mark.parametrize(
     "name", ["../escape.png", "/absolute.png", "images/./a.png", "C:a.png", "images//a.png", ""]
 )
-def test_unsafe_assets_rejected(tmp_path, name):
+def test_unsafe_assets_rejected(tmp_path: Path, name: str) -> None:
     with pytest.raises(ValueError, match="Unsafe"):
         DocumentResult([Page(0, [])], {name: Path(__file__)}).write_zip(tmp_path / "x.zip")
 
 
-def test_missing_asset_cannot_publish(tmp_path):
+def test_missing_asset_cannot_publish(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Missing referenced"):
         DocumentResult(
             [Page(0, [Block("image", "", image_source="images/missing.png")])]
@@ -52,14 +52,14 @@ def test_missing_asset_cannot_publish(tmp_path):
     assert not (tmp_path / "x.zip").exists()
 
 
-def test_non_json_metadata_cannot_publish(tmp_path):
+def test_non_json_metadata_cannot_publish(tmp_path: Path) -> None:
     result = DocumentResult([Page(0, [], metadata={"invalid": float("nan")})])
     with pytest.raises(ValueError, match="Out of range"):
         result.write_zip(tmp_path / "result.zip")
     assert not (tmp_path / "result.zip").exists()
 
 
-def test_titles_and_math_keep_plugin_semantics():
+def test_titles_and_math_keep_plugin_semantics() -> None:
     result = DocumentResult(
         [
             Page(

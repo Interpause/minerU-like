@@ -7,12 +7,12 @@ from mineru_like.fidelity import compare
 SETTINGS = SimpleNamespace(global_ssim=0.995, local_ssim=0.98, edge_recall=0.995)
 
 
-def test_identical_image_passes():
+def test_identical_image_passes() -> None:
     image = Image.new("RGBA", (64, 64), "white")
     assert compare(image, image.copy(), SETTINGS).accepted
 
 
-def test_small_colored_stroke_and_punctuation_loss_rejected():
+def test_small_colored_stroke_and_punctuation_loss_rejected() -> None:
     image = Image.new("RGBA", (256, 256), "white")
     draw = ImageDraw.Draw(image)
     draw.line((80, 80, 86, 80), fill=(255, 0, 0), width=1)
@@ -24,7 +24,7 @@ def test_small_colored_stroke_and_punctuation_loss_rejected():
     assert result.edge_recall < SETTINGS.edge_recall
 
 
-def test_alpha_and_hidden_rgb_changes_rejected():
+def test_alpha_and_hidden_rgb_changes_rejected() -> None:
     image = Image.new("RGBA", (4, 4), (100, 20, 50, 0))
     candidate = image.copy()
     candidate.putpixel((0, 0), (0, 0, 0, 0))
@@ -33,7 +33,7 @@ def test_alpha_and_hidden_rgb_changes_rejected():
     assert not compare(image, candidate, SETTINGS).accepted
 
 
-def test_decimal_minus_and_thin_colored_line_individually_rejected():
+def test_decimal_minus_and_thin_colored_line_individually_rejected() -> None:
     marks = [
         lambda d: d.point((32, 32), fill="black"),
         lambda d: d.line((30, 32, 34, 32), fill="black"),
@@ -45,7 +45,7 @@ def test_decimal_minus_and_thin_colored_line_individually_rejected():
         assert not compare(original, Image.new("RGB", original.size, "white"), SETTINGS).accepted
 
 
-def test_tiled_global_ssim_matches_direct_moments():
+def test_tiled_global_ssim_matches_direct_moments() -> None:
     import numpy as np
 
     from mineru_like.fidelity import _global_ssim, _ssim
@@ -62,7 +62,7 @@ def test_tiled_global_ssim_matches_direct_moments():
     assert abs(_global_ssim(a, b) - _ssim(a, b)) < 1e-8
 
 
-def test_tiled_edges_preserve_marks_across_both_tile_boundaries():
+def test_tiled_edges_preserve_marks_across_both_tile_boundaries() -> None:
     import numpy as np
 
     from mineru_like.fidelity import _edge_counts

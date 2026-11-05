@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -7,12 +8,12 @@ from mineru_like.result import Block, DocumentResult, Page
 from mineru_like.tables import reconstruct_tables
 
 
-def table(*cells):
+def table(*cells: str) -> str:
     return "<table>" + "".join(f"<tr><td>{cell}</td></tr>" for cell in cells) + "</table>"
 
 
 @pytest.mark.asyncio
-async def test_three_page_reconstruction_renders_intermediate(tmp_path):
+async def test_three_page_reconstruction_renders_intermediate(tmp_path: Path) -> None:
     for i in range(3):
         Image.new("RGB", (10, 10), "white").save(tmp_path / f"page-{i}.png")
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(3)])
@@ -35,12 +36,13 @@ async def test_three_page_reconstruction_renders_intermediate(tmp_path):
     assert calls[0][0] == [tmp_path / "page-1.png", tmp_path / "page-2.png"]
     assert calls[1][0][1] == tmp_path / "table-recursive-1.png"
     assert table("1", "2") in rendered[0] and table("1", "2") in calls[1][1]
+    assert result.markdown_override is not None
     assert result.markdown_override.count("<table>") == 1
     assert all(len(page.blocks) == 1 for page in result.pages)
 
 
 @pytest.mark.asyncio
-async def test_reconstruction_refuses_lost_cells(tmp_path):
+async def test_reconstruction_refuses_lost_cells(tmp_path: Path) -> None:
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(2)])
 
     class Runtime:
@@ -56,7 +58,7 @@ async def test_reconstruction_refuses_lost_cells(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_docvortex_renders_intermediate_table(tmp_path):
+async def test_docvortex_renders_intermediate_table(tmp_path: Path) -> None:
     from mineru_like.tables import render_table_html
 
     output = tmp_path / "rendered.png"
@@ -67,7 +69,7 @@ async def test_docvortex_renders_intermediate_table(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reconstruction_rejects_invented_cells(tmp_path):
+async def test_reconstruction_rejects_invented_cells(tmp_path: Path) -> None:
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(2)])
 
     class Runtime:
@@ -83,7 +85,7 @@ async def test_reconstruction_rejects_invented_cells(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hint", ["table", "layout"])
-async def test_candidate_on_one_side_and_explicit_negative(tmp_path, hint):
+async def test_candidate_on_one_side_and_explicit_negative(tmp_path: Path, hint: str) -> None:
     left = Page(
         0,
         [Block("table", table("a"))] if hint == "table" else [Block("text", "text")],
@@ -103,14 +105,14 @@ async def test_candidate_on_one_side_and_explicit_negative(tmp_path, hint):
 
 
 @pytest.mark.asyncio
-async def test_heuristic_skip_is_not_model_negative(tmp_path):
+async def test_heuristic_skip_is_not_model_negative(tmp_path: Path) -> None:
     result = DocumentResult([Page(0, [Block("text", "hello")]), Page(1, [Block("text", "world")])])
     assert await reconstruct_tables(result, tmp_path, None, None, max_tokens=100) == 0
     assert result.diagnostics[-1]["outcome"] == "heuristic_skip"
 
 
 @pytest.mark.asyncio
-async def test_recovery_and_truncated_fragment(tmp_path):
+async def test_recovery_and_truncated_fragment(tmp_path: Path) -> None:
     result = DocumentResult(
         [
             Page(0, [Block("table", "<table><tr><td>a</td></tr>")]),
@@ -138,11 +140,12 @@ async def test_recovery_and_truncated_fragment(tmp_path):
     )
     assert result.diagnostics[-1]["finish_reason"] == "length"
     assert "truncated" in result.diagnostics[-1]["warning"]
+    assert result.markdown_override is not None
     assert "paragraph" in result.markdown_override
 
 
 @pytest.mark.asyncio
-async def test_three_page_merge_preserves_non_table_content(tmp_path):
+async def test_three_page_merge_preserves_non_table_content(tmp_path: Path) -> None:
     result = DocumentResult(
         [
             Page(i, [Block("text", f"paragraph {i}"), Block("table", table(str(i)))])
@@ -162,12 +165,13 @@ async def test_three_page_merge_preserves_non_table_content(tmp_path):
         Image.new("RGB", (10, 10), "white").save(output)
 
     assert await reconstruct_tables(result, tmp_path, Runtime(), render, max_tokens=100) == 2
+    assert result.markdown_override is not None
     assert all(f"paragraph {i}" in result.markdown_override for i in range(3))
     assert result.diagnostics[-1]["source_pages"] == [0, 1, 2]
 
 
 @pytest.mark.asyncio
-async def test_runtime_failure_propagates(tmp_path):
+async def test_runtime_failure_propagates(tmp_path: Path) -> None:
     from mineru_like.runtime import InferenceError
 
     result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(2)])
@@ -190,7 +194,9 @@ async def test_runtime_failure_propagates(tmp_path):
         json.dumps([{"source_pages": [1, 2], "html": table("invented")}]),
     ],
 )
-async def test_recovery_does_not_modify_page_when_merge_not_accepted(tmp_path, response):
+async def test_recovery_does_not_modify_page_when_merge_not_accepted(
+    tmp_path: Path, response: str
+) -> None:
     original = Page(1, [Block("text", "original text")])
     result = DocumentResult([Page(0, [Block("table", table("a"))]), original])
 
@@ -213,7 +219,7 @@ async def test_recovery_does_not_modify_page_when_merge_not_accepted(tmp_path, r
 
 
 @pytest.mark.asyncio
-async def test_reconstruction_accepts_deduplicated_repeated_first_row(tmp_path):
+async def test_reconstruction_accepts_deduplicated_repeated_first_row(tmp_path: Path) -> None:
     result = DocumentResult(
         [
             Page(0, [Block("table", table("Header", "a"))]),
@@ -230,7 +236,7 @@ async def test_reconstruction_accepts_deduplicated_repeated_first_row(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_empty_fragment_triggers_targeted_recovery(tmp_path):
+async def test_empty_fragment_triggers_targeted_recovery(tmp_path: Path) -> None:
     result = DocumentResult(
         [Page(0, [Block("table", table("a"))]), Page(1, [Block("table", "<table><tr><td>partial")])]
     )
@@ -255,7 +261,7 @@ async def test_empty_fragment_triggers_targeted_recovery(tmp_path):
 
 
 @pytest.mark.parametrize("replacement", [table("b", "a"), table("a", "b")])
-def test_reconstruction_preserves_cell_order_and_empty_cells(replacement):
+def test_reconstruction_preserves_cell_order_and_empty_cells(replacement: str) -> None:
     from mineru_like.tables import _validated
 
     raw = json.dumps([{"source_pages": [1, 2], "html": replacement}])

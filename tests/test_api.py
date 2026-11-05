@@ -3,6 +3,7 @@ import io
 import threading
 import time
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,7 +56,7 @@ def wait_status(client, ident, desired):
     raise AssertionError(data)
 
 
-def test_upload_job_download_and_auth(tmp_path):
+def test_upload_job_download_and_auth(tmp_path: Path) -> None:
     app = create_app(Settings(data_dir=tmp_path, api_key="secret"), parser)
     with TestClient(app) as client:
         assert client.get("/v1/health").json()["status"] == "ok"
@@ -73,7 +74,7 @@ def test_upload_job_download_and_auth(tmp_path):
             assert archive.read("markdown.md") == b"test"
 
 
-def test_tier_discovery_and_native_advanced_rejection(tmp_path):
+def test_tier_discovery_and_native_advanced_rejection(tmp_path: Path) -> None:
     class EngineParser:
         tiers = ("standard", "advanced")
 
@@ -96,7 +97,7 @@ def test_tier_discovery_and_native_advanced_rejection(tmp_path):
         assert client.post("/v1/parse/jobs", json=request).status_code == 415
 
 
-def test_validation_and_running_cancellation(tmp_path):
+def test_validation_and_running_cancellation(tmp_path: Path) -> None:
     async def slow(**kwargs):
         await asyncio.sleep(60)
 
@@ -113,7 +114,7 @@ def test_validation_and_running_cancellation(tmp_path):
         assert client.get("/v1/parse/jobs/" + job).json()["status"] == "canceled"
 
 
-def test_restart_recovers_queued_and_fails_running(tmp_path):
+def test_restart_recovers_queued_and_fails_running(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path)
     app = create_app(settings, parser)
     store = app.state.store
@@ -133,7 +134,7 @@ def test_restart_recovers_queued_and_fails_running(tmp_path):
         assert wait_status(client, "queued", {"completed", "failed"})["status"] == "completed"
 
 
-def test_unbounded_jobs_overlap_and_cancellation_is_isolated(tmp_path):
+def test_unbounded_jobs_overlap_and_cancellation_is_isolated(tmp_path: Path) -> None:
     entered = set()
     release = threading.Event()
 
@@ -160,7 +161,7 @@ def test_unbounded_jobs_overlap_and_cancellation_is_isolated(tmp_path):
             assert wait_status(client, job, {"completed", "failed"})["status"] == "completed"
 
 
-def test_job_failure_is_reported(tmp_path):
+def test_job_failure_is_reported(tmp_path: Path) -> None:
     async def broken(**kwargs):
         raise ValueError("bad document")
 
@@ -171,7 +172,7 @@ def test_job_failure_is_reported(tmp_path):
 
 
 @pytest.mark.parametrize("tier", ["flash", "basic", "auto"])
-def test_lower_tiers_upgrade_to_standard(tmp_path, tier):
+def test_lower_tiers_upgrade_to_standard(tmp_path: Path, tier: str) -> None:
     seen = []
 
     async def capture(**kwargs):
@@ -192,7 +193,7 @@ def test_lower_tiers_upgrade_to_standard(tmp_path, tier):
         assert seen == ["standard"]
 
 
-def test_engine_lifecycle_and_config_snapshot(tmp_path):
+def test_engine_lifecycle_and_config_snapshot(tmp_path: Path) -> None:
     class Engine:
         state = "stopped"
         device = "cpu"
@@ -220,13 +221,13 @@ def test_engine_lifecycle_and_config_snapshot(tmp_path):
     assert engine.state == "stopped"
 
 
-def test_unconfigured_rejects_jobs(tmp_path):
+def test_unconfigured_rejects_jobs(tmp_path: Path) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
         assert submit(client, "missing").status_code == 503
         assert client.get("/v1/tiers").json()["data"] == []
 
 
-def test_cleanup_retains_active_jobs_and_expires_terminal(tmp_path):
+def test_cleanup_retains_active_jobs_and_expires_terminal(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path, retention_hours=1, upload_retention_hours=1)
     app = create_app(settings, parser)
     store = app.state.store
@@ -251,7 +252,7 @@ def test_cleanup_retains_active_jobs_and_expires_terminal(tmp_path):
     assert not (tmp_path / "uploads" / "expired").exists()
 
 
-def test_cancel_waits_for_zip_writer_and_discards_output(tmp_path):
+def test_cancel_waits_for_zip_writer_and_discards_output(tmp_path: Path) -> None:
     entered, release = threading.Event(), threading.Event()
 
     class SlowResult:
@@ -280,7 +281,7 @@ def test_cancel_waits_for_zip_writer_and_discards_output(tmp_path):
         assert list((tmp_path / "outputs").iterdir()) == []
 
 
-def test_recovery_cleans_orphans_and_rejects_changed_configuration(tmp_path):
+def test_recovery_cleans_orphans_and_rejects_changed_configuration(tmp_path: Path) -> None:
     from mineru_like.store import config_snapshot
 
     original = Settings(data_dir=tmp_path, captioning=True)
@@ -317,7 +318,7 @@ def test_recovery_cleans_orphans_and_rejects_changed_configuration(tmp_path):
         assert not (tmp_path / "work" / "old").exists()
 
 
-def test_data_directory_has_single_owner(tmp_path):
+def test_data_directory_has_single_owner(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path)
     with TestClient(create_app(settings, parser)):
         with pytest.raises(RuntimeError, match="already in use"):
@@ -327,7 +328,7 @@ def test_data_directory_has_single_owner(tmp_path):
         assert client.get("/v1/health").status_code == 200
 
 
-def test_failed_job_diagnostics_are_retained_then_expire(tmp_path):
+def test_failed_job_diagnostics_are_retained_then_expire(tmp_path: Path) -> None:
     async def broken(**kwargs):
         (kwargs["workdir"] / "diagnostics.jsonl").write_text("diagnostic")
         raise ValueError("parse failed")
@@ -350,7 +351,7 @@ def test_failed_job_diagnostics_are_retained_then_expire(tmp_path):
         assert not diagnostics.exists()
 
 
-def test_recovery_preserves_interrupted_job_diagnostics(tmp_path):
+def test_recovery_preserves_interrupted_job_diagnostics(tmp_path: Path) -> None:
     app = create_app(Settings(data_dir=tmp_path), parser)
     now = time.time()
     work = tmp_path / "work" / "interrupted"
@@ -367,7 +368,7 @@ def test_recovery_preserves_interrupted_job_diagnostics(tmp_path):
         ).read_text() == "partial"
 
 
-def test_storage_reservations_and_output_limit(tmp_path):
+def test_storage_reservations_and_output_limit(tmp_path: Path) -> None:
     app = create_app(Settings(data_dir=tmp_path, max_storage_bytes=8), parser)
     with TestClient(app) as client:
         file_id = upload(client)

@@ -11,7 +11,7 @@ from mineru_like.config import Settings
 from mineru_like.pipeline import Pipeline, _assessment, _clean_markdown, _structured
 
 
-def test_existing_ovis_classifications_supply_encoder_hints():
+def test_existing_ovis_classifications_supply_encoder_hints() -> None:
     from mineru_like.pipeline import _figure_kind
 
     assert _figure_kind({"category": "chart", "content": "<img/>"}) == "drawing"
@@ -84,7 +84,7 @@ def structured(content="Visual text"):
 
 
 @pytest.mark.asyncio
-async def test_native_pdf_and_force_ocr(tmp_path):
+async def test_native_pdf_and_force_ocr(tmp_path: Path) -> None:
     path = tmp_path / "in.pdf"
     pdf = canvas.Canvas(str(path))
     pdf.drawString(30, 700, "Native prose")
@@ -103,7 +103,7 @@ async def test_native_pdf_and_force_ocr(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_scan_backed_pdf_does_not_reuse_stale_text(tmp_path):
+async def test_scan_backed_pdf_does_not_reuse_stale_text(tmp_path: Path) -> None:
     path = tmp_path / "scan.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(100, 100))
     image = Image.new("RGB", (100, 100), "white")
@@ -122,7 +122,7 @@ async def test_scan_backed_pdf_does_not_reuse_stale_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_digital_prose_reused_beside_visual_formula(tmp_path):
+async def test_digital_prose_reused_beside_visual_formula(tmp_path: Path) -> None:
     path = tmp_path / "math.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(200, 200))
     pdf.drawString(20, 160, "Accurate prose")
@@ -144,7 +144,7 @@ async def test_digital_prose_reused_beside_visual_formula(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_image_pages_retry_and_assets(tmp_path):
+async def test_image_pages_retry_and_assets(tmp_path: Path) -> None:
     path = tmp_path / "in.tiff"
     first = Image.new("RGB", (100, 100), "white")
     ImageDraw.Draw(first).rectangle((10, 10, 90, 90), fill="black")
@@ -189,13 +189,14 @@ async def test_image_pages_retry_and_assets(tmp_path):
         == "[AI-generated image description; supplemental] A square."
     )
     assert "```mermaid" in result.pages[0].blocks[0].captions[1]
+    assert result.pages[0].blocks[0].image_source is not None
     assert result.assets[result.pages[0].blocks[0].image_source].is_file()
     assert any(d.get("error") for d in result.diagnostics)
     result.validate()
 
 
 @pytest.mark.asyncio
-async def test_invalid_output_fails_instead_of_empty_success(tmp_path):
+async def test_invalid_output_fails_instead_of_empty_success(tmp_path: Path) -> None:
     path = tmp_path / "input.png"
     Image.new("RGB", (20, 20), "black").save(path)
     runtime = Runtime([assessment(), "[]", "[]", "[]", "", "", ""])
@@ -207,7 +208,7 @@ async def test_invalid_output_fails_instead_of_empty_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path):
+async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path: Path) -> None:
     path = tmp_path / "tables.tiff"
     first = Image.new("RGB", (100, 100), "black")
     first.save(path, save_all=True, append_images=[first])
@@ -244,7 +245,7 @@ async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cross_page_table_rejects_invented_cells(tmp_path):
+async def test_cross_page_table_rejects_invented_cells(tmp_path: Path) -> None:
     path = tmp_path / "tables.tiff"
     frame = Image.new("RGB", (40, 40), "black")
     frame.save(path, save_all=True, append_images=[frame])
@@ -278,7 +279,7 @@ async def test_cross_page_table_rejects_invented_cells(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_printed_figure_caption_is_associated_with_asset(tmp_path):
+async def test_printed_figure_caption_is_associated_with_asset(tmp_path: Path) -> None:
     path = tmp_path / "figure.png"
     image = Image.new("RGB", (100, 100), "white")
     ImageDraw.Draw(image).rectangle((10, 10, 90, 70), fill="black")
@@ -301,7 +302,7 @@ async def test_printed_figure_caption_is_associated_with_asset(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_advanced_verifies_page_and_rejects_material_mismatch(tmp_path):
+async def test_advanced_verifies_page_and_rejects_material_mismatch(tmp_path: Path) -> None:
     path = tmp_path / "input.png"
     Image.new("RGB", (20, 20), "black").save(path)
     runtime = Runtime([assessment(), structured("alpha"), "alpha"])
@@ -318,7 +319,7 @@ async def test_advanced_verifies_page_and_rejects_material_mismatch(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_advanced_pipeline_reconstructs_three_pages(tmp_path):
+async def test_advanced_pipeline_reconstructs_three_pages(tmp_path: Path) -> None:
     path = tmp_path / "tables.tiff"
     first = Image.new("RGB", (100, 100), "black")
     first.save(path, save_all=True, append_images=[first, first])
@@ -351,7 +352,7 @@ async def test_advanced_pipeline_reconstructs_three_pages(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path):
+async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path: Path) -> None:
     path = tmp_path / "page.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(72, 72))
     pdf.drawString(5, 35, "Hello")
@@ -379,7 +380,7 @@ async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_standard_recognizes_only_risky_formula(tmp_path):
+async def test_standard_recognizes_only_risky_formula(tmp_path: Path) -> None:
     path = tmp_path / "math.png"
     Image.new("RGB", (500, 500), "black").save(path)
     items = json.dumps(
@@ -400,7 +401,7 @@ async def test_standard_recognizes_only_risky_formula(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path):
+async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path: Path) -> None:
     path = tmp_path / "three.tiff"
     frame = Image.new("RGB", (100, 100), "black")
     frame.save(path, save_all=True, append_images=[frame, frame])
@@ -441,7 +442,7 @@ async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_small_pdf_text_gets_bounded_high_resolution_checkpoint(tmp_path):
+async def test_small_pdf_text_gets_bounded_high_resolution_checkpoint(tmp_path: Path) -> None:
     path = tmp_path / "dense.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(612, 792))
     pdf.setFont("Helvetica", 6)
@@ -462,7 +463,7 @@ async def test_small_pdf_text_gets_bounded_high_resolution_checkpoint(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_small_pdf_text_checkpoint_fails_on_missing_number(tmp_path):
+async def test_small_pdf_text_checkpoint_fails_on_missing_number(tmp_path: Path) -> None:
     path = tmp_path / "dense.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(612, 792))
     pdf.setFont("Helvetica", 6)
@@ -483,7 +484,7 @@ async def test_small_pdf_text_checkpoint_fails_on_missing_number(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_inference_timeout_records_diagnostics_without_retries(tmp_path):
+async def test_inference_timeout_records_diagnostics_without_retries(tmp_path: Path) -> None:
     path = tmp_path / "page.png"
     Image.new("RGB", (40, 40), "black").save(path)
 
@@ -504,7 +505,7 @@ async def test_inference_timeout_records_diagnostics_without_retries(tmp_path):
     assert entries[0]["error"] == "inference timed out"
 
 
-def test_layout_and_complete_record_salvage():
+def test_layout_and_complete_record_salvage() -> None:
     layout = '[{"bbox":[0,0,1000,1000],"category":"text"}]'
     assert not _assessment(layout)["blank"]
     value = '[{"bbox":[0,0,1000,1000],"category":"text","content":"a"}, {"bbox":'
@@ -517,7 +518,7 @@ def test_layout_and_complete_record_salvage():
         _structured('[{"bbox":[900,0,100,1000],"category":"text","content":"x"}]')
 
 
-def test_markdown_tail_cleanup_is_bounded():
+def test_markdown_tail_cleanup_is_bounded() -> None:
     assert _clean_markdown("text " * 2) == "text text"
     assert len(_clean_markdown("intro " + "x" * 8000)) < 100
 
@@ -540,7 +541,7 @@ class ParallelRuntime:
 
 
 @pytest.mark.asyncio
-async def test_parallel_pages_keep_order(tmp_path):
+async def test_parallel_pages_keep_order(tmp_path: Path) -> None:
     path = tmp_path / "pages.tiff"
     frame = Image.new("RGB", (20, 20), "black")
     frame.save(path, save_all=True, append_images=[frame])
@@ -555,7 +556,7 @@ async def test_parallel_pages_keep_order(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_structured_failure_keeps_markdown_and_page_image(tmp_path):
+async def test_structured_failure_keeps_markdown_and_page_image(tmp_path: Path) -> None:
     path = tmp_path / "page.png"
     Image.new("RGB", (30, 30), "black").save(path)
 
@@ -579,7 +580,7 @@ async def test_structured_failure_keeps_markdown_and_page_image(tmp_path):
     result.validate()
 
 
-def test_partial_table_requires_incomplete_response_and_complete_cell():
+def test_partial_table_requires_incomplete_response_and_complete_cell() -> None:
     fragment = "<table><tr><td>12</td>"
     record = {"bbox": [0, 0, 1000, 1000], "category": "table", "content": fragment}
 
@@ -597,7 +598,7 @@ def test_partial_table_requires_incomplete_response_and_complete_cell():
         _structured(Limited(json.dumps([record])))
 
 
-def test_official_tail_cleanup_preserves_short_repetition():
+def test_official_tail_cleanup_preserves_short_repetition() -> None:
     from mineru_like.pipeline import _clean_markdown
 
     # The supplied helper intentionally cleans even legitimate long repetition;
@@ -608,7 +609,7 @@ def test_official_tail_cleanup_preserves_short_repetition():
 
 
 @pytest.mark.asyncio
-async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path):
+async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path: Path) -> None:
     path = tmp_path / "page.png"
     Image.new("RGB", (30, 30), "black").save(path)
     fragment = "<table><tr><td>12</td>"
@@ -637,7 +638,7 @@ async def test_limited_table_keeps_page_image_and_original_fragment(tmp_path):
     result.validate()
 
 
-def test_markdown_fallback_replaces_unavailable_local_image_reference():
+def test_markdown_fallback_replaces_unavailable_local_image_reference() -> None:
     from mineru_like.pipeline import _fallback_image_references
 
     value = _fallback_image_references('![plot](images/bbox_0_0_1_1.jpg) <img src="images/x.png">')
@@ -645,7 +646,7 @@ def test_markdown_fallback_replaces_unavailable_local_image_reference():
     assert "images/bbox_" not in value and "images/x.png" not in value
 
 
-def test_length_response_retains_valid_record_and_rejected_provenance():
+def test_length_response_retains_valid_record_and_rejected_provenance() -> None:
     class Limited(str):
         finish_reason = "length"
 
@@ -657,7 +658,7 @@ def test_length_response_retains_valid_record_and_rejected_provenance():
 
 
 @pytest.mark.asyncio
-async def test_invalid_optional_caption_keeps_figure(tmp_path):
+async def test_invalid_optional_caption_keeps_figure(tmp_path: Path) -> None:
     path = tmp_path / "figure.png"
     Image.new("RGB", (30, 30), "black").save(path)
     image = json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "image", "content": "<img/>"}])
@@ -674,8 +675,8 @@ async def test_invalid_optional_caption_keeps_figure(tmp_path):
 
 @pytest.mark.asyncio
 async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragment(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from mineru_like import tables
     from mineru_like.result import Block
 
@@ -713,7 +714,7 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
 
 
 @pytest.mark.asyncio
-async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_path):
+async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_path: Path) -> None:
     path = tmp_path / "math.png"
     Image.new("RGB", (100, 100), "black").save(path)
 
@@ -750,7 +751,9 @@ async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_independent_page_verification_runs_concurrently(tmp_path, monkeypatch):
+async def test_independent_page_verification_runs_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from mineru_like import verification
 
     path = tmp_path / "pages.tiff"

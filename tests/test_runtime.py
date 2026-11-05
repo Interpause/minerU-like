@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import httpx2 as httpx
 import pytest
@@ -22,7 +23,7 @@ def make_runtime(handler):
 
 
 @pytest.mark.asyncio
-async def test_vision_request_and_incomplete_response(tmp_path):
+async def test_vision_request_and_incomplete_response(tmp_path: Path) -> None:
     requests = []
 
     def handler(request):
@@ -54,7 +55,7 @@ async def test_vision_request_and_incomplete_response(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_external_cancellation_keeps_server_usable(tmp_path):
+async def test_external_cancellation_keeps_server_usable(tmp_path: Path) -> None:
     started = asyncio.Event()
 
     async def handler(request):
@@ -77,7 +78,7 @@ async def test_external_cancellation_keeps_server_usable(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_lfs_pointer_rejected_before_request(tmp_path):
+async def test_lfs_pointer_rejected_before_request(tmp_path: Path) -> None:
     runtime = make_runtime(lambda request: httpx.Response(500))
     image = tmp_path / "page.png"
     image.write_bytes(b"version https://git-lfs.github.com/spec/v1\n")
@@ -86,7 +87,7 @@ async def test_lfs_pointer_rejected_before_request(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_managed_preflight_rejects_context_overflow(tmp_path):
+async def test_managed_preflight_rejects_context_overflow(tmp_path: Path) -> None:
     calls = []
 
     def handler(request):
@@ -111,7 +112,9 @@ async def test_managed_preflight_rejects_context_overflow(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_managed_command_and_subprocess_library_environment(monkeypatch, tmp_path):
+async def test_managed_command_and_subprocess_library_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls = []
     binary = tmp_path / "bin" / "llama-server"
     monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/lib")
@@ -171,7 +174,9 @@ async def test_managed_command_and_subprocess_library_environment(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_cuda_probe_does_not_treat_load_error_as_device(monkeypatch):
+async def test_cuda_probe_does_not_treat_load_error_as_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Probe:
         returncode = 0
 
@@ -187,7 +192,7 @@ async def test_cuda_probe_does_not_treat_load_error_as_device(monkeypatch):
         await runtime._select_device("server")
 
 
-def test_rejects_invalid_gguf(tmp_path):
+def test_rejects_invalid_gguf(tmp_path: Path) -> None:
     model = tmp_path / "model.gguf"
     model.write_bytes(b"not a model")
     with pytest.raises(InferenceError, match="not a GGUF"):
@@ -196,7 +201,7 @@ def test_rejects_invalid_gguf(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["managed", "external"])
-async def test_absolute_request_timeout_respects_ownership(tmp_path, mode):
+async def test_absolute_request_timeout_respects_ownership(tmp_path: Path, mode: str) -> None:
     async def handler(request):
         if request.url.path == "/tokenize":
             return httpx.Response(200, json={"tokens": [1]})
@@ -217,7 +222,7 @@ async def test_absolute_request_timeout_respects_ownership(tmp_path, mode):
 
 
 @pytest.mark.asyncio
-async def test_external_v1_base_url_normalization():
+async def test_external_v1_base_url_normalization() -> None:
     runtime = InferenceRuntime(
         RuntimeSettings(mode="external", base_url="http://server/prefix/v1/")
     )
@@ -227,7 +232,7 @@ async def test_external_v1_base_url_normalization():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_managed_requests_and_cancellation(tmp_path):
+async def test_concurrent_managed_requests_and_cancellation(tmp_path: Path) -> None:
     entered = asyncio.Event()
     release = asyncio.Event()
     count = 0
