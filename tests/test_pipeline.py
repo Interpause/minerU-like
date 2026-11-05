@@ -273,3 +273,144 @@ async def test_advanced_pipeline_reconstructs_three_pages(tmp_path):
     assert html("ABC") in result.markdown()
     assert result.markdown().count("<table>") == 1
     assert len(result.pages) == 3
+
+
+@pytest.mark.asyncio
+async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path):
+    path = tmp_path / "page.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(72, 72))
+    pdf.drawString(5, 35, "Hello")
+    pdf.save()
+    settings = Settings()
+    standard = Runtime([assessment(), structured("Hello")])
+    advanced = Runtime([assessment(), structured("Hello"), "Hello"])
+    result = await Pipeline(settings, standard).parse(
+        path, path.name, "ocr", "standard", tmp_path / "s"
+    )
+    other = await Pipeline(settings, advanced).parse(
+        path, path.name, "ocr", "advanced", tmp_path / "a"
+    )
+    with Image.open(tmp_path / "s" / "page-0.png") as image:
+        assert image.size == (200, 200)
+    with Image.open(tmp_path / "a" / "page-0.png") as image:
+        assert image.size == (300, 300)
+    assert len(standard.calls) == 2 and len(advanced.calls) == 3
+    assert settings.render_dpi == 200 and settings.max_image_side == 2880
+    for diagnostics in (result.diagnostics, other.diagnostics):
+        calls = [d for d in diagnostics if "call_number" in d]
+        assert len(calls) in (2, 3)
+        assert [d["call_number"] for d in calls] == list(range(1, len(calls) + 1))
+        assert all(d["purpose"] and d["duration_seconds"] >= 0 for d in calls)
+
+
+@pytest.mark.asyncio
+async def test_standard_recognizes_only_risky_formula(tmp_path):
+    path = tmp_path / "math.png"
+    Image.new("RGB", (500, 500), "black").save(path)
+    items = json.dumps(
+        [
+            {"bbox": [0, 0, 1000, 400], "category": "display_formula", "content": "x+y"},
+            {"bbox": [0, 400, 1000, 900], "category": "inline_formula", "content": "x+{"},
+        ]
+    )
+    standard = Runtime([assessment(math=True), items, "x+1"])
+    result = await Pipeline(Settings(), standard).parse(
+        path, path.name, "auto", "standard", tmp_path / "s"
+    )
+    assert [b.content for b in result.pages[0].blocks] == ["x+y", "x+1"]
+    assert len(standard.calls) == 3
+    advanced = Runtime([assessment(math=True), items, "x+y", "x+1", "$x+y$ $x+1$"])
+    await Pipeline(Settings(), advanced).parse(path, path.name, "auto", "advanced", tmp_path / "a")
+    assert len(advanced.calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path):
+    path = tmp_path / "three.tiff"
+    frame = Image.new("RGB", (100, 100), "black")
+    frame.save(path, save_all=True, append_images=[frame, frame])
+
+    def table(value):
+        return f"<table><tr><td>{value}</td></tr></table>"
+
+    replies = []
+    for value in "ABC":
+        replies.extend(
+            [
+                assessment(tables=True),
+                json.dumps(
+                    [{"bbox": [0, 0, 1000, 1000], "category": "table", "content": table(value)}]
+                ),
+            ]
+        )
+    merged = "<table><tr><td>A</td></tr><tr><td>B</td></tr></table>"
+    replies.append(json.dumps([{"source_pages": [1, 2], "html": merged}]))
+    runtime = Runtime(replies)
+    result = await Pipeline(Settings(), runtime).parse(
+        path, path.name, "auto", "standard", tmp_path / "out"
+    )
+    assert merged in result.markdown() and table("C") in result.markdown()
+    assert len(runtime.calls) == 7
+
+
+@pytest.mark.asyncio
+async def test_small_pdf_text_gets_bounded_high_resolution_checkpoint(tmp_path):
+    path = tmp_path / "dense.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 6)
+    pdf.drawString(40, 740, "Dense text has a specific value 123")
+    pdf.drawString(40, 730, "Another small line of text")
+    pdf.save()
+    text = "Dense text has a specific value 123 Another small line of text"
+    runtime = Runtime([assessment(effort="visual"), structured(text), structured(text)])
+    result = await Pipeline(Settings(), runtime).parse(
+        path, path.name, "ocr", "standard", tmp_path / "out"
+    )
+    calls = [d for d in result.diagnostics if d.get("stage") == "small_text_region"]
+    assert len(calls) == 1 and calls[0]["duration_seconds"] >= 0
+    with Image.open(runtime.calls[1][0][0]) as page, Image.open(runtime.calls[2][0][0]) as region:
+        assert region.width < page.width and region.height < page.height
+        assert region.width > 500
+    assert len(runtime.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_small_pdf_text_checkpoint_fails_on_missing_number(tmp_path):
+    path = tmp_path / "dense.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 6)
+    pdf.drawString(40, 740, "Small number 123")
+    pdf.save()
+    runtime = Runtime(
+        [
+            assessment(effort="visual"),
+            structured("Small number 124"),
+            structured("Small number 123"),
+        ]
+    )
+    with pytest.raises(ValueError, match="Small-text region disagrees"):
+        await Pipeline(Settings(), runtime).parse(
+            path, path.name, "ocr", "standard", tmp_path / "out"
+        )
+
+
+@pytest.mark.asyncio
+async def test_inference_timeout_records_diagnostics_without_retries(tmp_path):
+    path = tmp_path / "page.png"
+    Image.new("RGB", (40, 40), "black").save(path)
+
+    class TimeoutRuntime:
+        async def infer(self, images, prompt, *, max_tokens=None):
+            raise TimeoutError()
+
+    with pytest.raises(TimeoutError):
+        await Pipeline(Settings(), TimeoutRuntime()).parse(
+            path, path.name, "auto", "standard", tmp_path / "out"
+        )
+    entries = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "diagnostics.jsonl").read_text().splitlines()
+    ]
+    assert len(entries) == 1
+    assert entries[0]["purpose"] == "assessment" and entries[0]["duration_seconds"] >= 0
+    assert entries[0]["error"] == "inference timed out"

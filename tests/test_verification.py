@@ -87,3 +87,22 @@ async def test_table_words_in_wrong_cells_fail(context):
     page = Page(0, [Block("table", "<table><tr><td>red blue</td><td>green</td></tr></table>")])
     with pytest.raises(VerificationError):
         await verify_page(Pipeline("| red | blue green |"), page, context, [])
+
+
+@pytest.mark.asyncio
+async def test_standard_checks_only_flagged_regions(context):
+    from mineru_like.verification import verify_suspicious_regions
+
+    region = '[{"category":"text","content":"uncertain text","bbox":[0,0,999,999]}]'
+    pipeline = Pipeline(None, region)
+    page = Page(
+        0,
+        [Block("text", "uncertain text", bbox=(0, 0, 1, 1), metadata={"source": "visual"})],
+        metadata={"assessment": {"effort": "visual"}},
+    )
+    await verify_suspicious_regions(pipeline, page, context, [])
+    assert pipeline.stages == []
+    page.metadata["assessment"]["effort"] = "verify"
+    await verify_suspicious_regions(pipeline, page, context, [])
+    assert pipeline.stages == ["standard_region"]
+    assert page.blocks[0].metadata["standard_region_verified"]

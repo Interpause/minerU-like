@@ -82,7 +82,9 @@ def _critical_supported(blocks, independent):
     )
 
 
-async def verify_page(pipeline, page, imagepath, diagnostics, recovery=None):
+async def verify_page(
+    pipeline, page, imagepath, diagnostics, recovery=None, *, crop_pdf=None, region_imagepath=None
+):
     """Verify independently; leave unresolved disagreements as explicit failure.
 
     Native content is never replaced. A visual text block may be replaced only
@@ -115,7 +117,7 @@ async def verify_page(pipeline, page, imagepath, diagnostics, recovery=None):
     # the complete page agrees with the independent representation.
     replacements = {}
     independent_tokens = _tokens(independent)
-    with Image.open(imagepath) as original:
+    with Image.open(region_imagepath or imagepath) as original:
         image = original.convert("RGB")
     for index, block in enumerate(page.blocks):
         if (
@@ -138,8 +140,11 @@ async def verify_page(pipeline, page, imagepath, diagnostics, recovery=None):
         if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
             continue
         with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
-            crop = Path(directory) / "region.png"
-            image.crop(bounds).save(crop)
+            if crop_pdf:
+                crop = crop_pdf(box=[round(v * 1000) for v in block.bbox], ordinal=index)
+            else:
+                crop = Path(directory) / "region.png"
+                image.crop(bounds).save(crop)
             items = await pipeline._infer_valid(
                 [crop],
                 (PROMPTS / "document_structured.txt").read_text(),
@@ -199,3 +204,157 @@ async def verify_page(pipeline, page, imagepath, diagnostics, recovery=None):
         }
     )
     return page
+
+
+async def verify_suspicious_regions(pipeline, page, imagepath, diagnostics, crop_pdf=None):
+    """Check only text regions with visible extraction problems or an explicit verify assessment."""
+    from .pipeline import PROMPTS, _structured
+
+    assess = page.metadata.get("assessment", {})
+    for index, block in enumerate(page.blocks):
+        if (
+            block.type not in {"text", "content", "abstract", "reference_content", "title"}
+            or not block.bbox
+            or str(block.metadata.get("source", "")).startswith("native")
+        ):
+            continue
+        suspicious = (
+            assess.get("effort") == "verify" or "\ufffd" in block.content or "??" in block.content
+        )
+        if not suspicious:
+            continue
+        with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
+            if crop_pdf:
+                box = [round(v * 1000) for v in block.bbox]
+                crop = crop_pdf(box=box, ordinal=index)
+            else:
+                with Image.open(imagepath) as image:
+                    width, height = image.size
+                    bounds = tuple(
+                        int(v * (width if i % 2 == 0 else height)) for i, v in enumerate(block.bbox)
+                    )
+                    crop = Path(directory) / "region.png"
+                    image.crop(bounds).save(crop)
+            items = await pipeline._infer_valid(
+                [crop],
+                (PROMPTS / "document_structured.txt").read_text(),
+                _structured,
+                diagnostics,
+                page.page_idx,
+                "standard_region",
+                None,
+            )
+        if len(items) != 1 or not _agree(block.content, items[0]["content"]):
+            diagnostics.append(
+                {
+                    "page_idx": page.page_idx,
+                    "stage": "standard_verification",
+                    "status": "unresolved",
+                    "region": index,
+                }
+            )
+            raise VerificationError("Targeted region verification disagrees with extraction")
+        block.metadata["standard_region_verified"] = True
+        diagnostics.append(
+            {
+                "page_idx": page.page_idx,
+                "stage": "standard_verification",
+                "status": "agreed",
+                "region": index,
+            }
+        )
+    return page
+
+
+async def verify_small_text_regions(
+    pipeline, page_idx, *, input_items, regions, pdf_path, image, workdir, diagnostics
+):
+    """Independently check bounded small-text crops against the page extraction."""
+    import asyncio
+
+    from .pipeline import PROMPTS, _formula_crop, _structured
+
+    allowed = {
+        "text",
+        "content",
+        "abstract",
+        "reference_content",
+        "doc_title",
+        "paragraph_title",
+        "footnote",
+        "vision_footnote",
+    }
+    for index, box in enumerate(regions):
+        overlapping = [
+            item
+            for item in input_items
+            if item["category"] in allowed
+            and item["bbox"][0] < box[2]
+            and item["bbox"][2] > box[0]
+            and item["bbox"][1] < box[3]
+            and item["bbox"][3] > box[1]
+        ]
+        if not overlapping:
+            covered = any(
+                item["bbox"][0] < box[2]
+                and item["bbox"][2] > box[0]
+                and item["bbox"][1] < box[3]
+                and item["bbox"][3] > box[1]
+                for item in input_items
+                if item["category"] in {"table", "display_formula", "inline_formula"}
+            )
+            if covered:
+                continue
+            diagnostics.append(
+                {
+                    "page_idx": page_idx,
+                    "stage": "small_text_verification",
+                    "status": "unresolved",
+                    "region": index,
+                }
+            )
+            raise VerificationError("Small-text region is missing from page extraction")
+        crop = await asyncio.to_thread(
+            _formula_crop, pdf_path, page_idx, box, image, workdir, 10000 + index, pipeline.settings
+        )
+
+        def nonempty(raw):
+            items = _structured(raw)
+            if not items or not any(item["content"].strip() for item in items):
+                raise ValueError("Empty small-text region")
+            return items
+
+        result = await pipeline._infer_valid(
+            [crop],
+            (PROMPTS / "document_structured.txt").read_text(),
+            nonempty,
+            diagnostics,
+            page_idx,
+            "small_text_region",
+            None,
+        )
+        evidence = _tokens(" ".join(item["content"] for item in result))
+        extracted = _tokens(" ".join(item["content"] for item in overlapping))
+        missing = evidence - extracted
+        total = max(sum(evidence.values()), 1)
+        if (
+            any(any(char.isdigit() for char in word) for word in missing)
+            or sum(missing.values()) / total > 0.25
+        ):
+            diagnostics.append(
+                {
+                    "page_idx": page_idx,
+                    "stage": "small_text_verification",
+                    "status": "unresolved",
+                    "region": index,
+                }
+            )
+            raise VerificationError("Small-text region disagrees with page extraction")
+        diagnostics.append(
+            {
+                "page_idx": page_idx,
+                "stage": "small_text_verification",
+                "status": "agreed",
+                "region": index,
+            }
+        )

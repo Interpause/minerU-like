@@ -12,6 +12,10 @@ dependencies = [
   "pillow>=11,<13",
   "pypdfium2>=4.30,<6",
   "docvortex==0.6.13",
+  "numpy>=2,<3",
+  "pymupdf>=1.26,<2",
+  "resvg-py>=0.5,<1",
+  "svgelements>=1.9,<2",
 ]
 
 [project.scripts]

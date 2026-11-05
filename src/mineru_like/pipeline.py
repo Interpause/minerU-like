@@ -8,6 +8,7 @@ import html
 import json
 import re
 import threading
+import time
 from collections import Counter
 from functools import partial
 from pathlib import Path
@@ -64,7 +65,7 @@ def _pdf_snapshot(path, idx, settings, workdir, recovery=False):
             try:
                 size = page.get_size()
                 scale = min(settings.render_dpi / 72, settings.max_image_side / max(size))
-                image = page.render(scale=scale * (1.5 if recovery else 1)).to_pil().convert("RGB")
+                image = page.render(scale=scale).to_pil().convert("RGB")
                 if recovery:
                     target = workdir / f"recovery-{idx}.png"
                     image.save(target)
@@ -93,11 +94,54 @@ def _pdf_snapshot(path, idx, settings, workdir, recovery=False):
                     )
                     or bool(re.search(r"[∑∫√∂∇≈≠≤≥±×÷∞∈∏]|[\u0370-\u03ff]", native))
                 )
-                return image, native, uncertain, not has_raster and not invisible
+                small_regions = _small_text_regions(page, objects, pdfium.raw)
+                return image, native, uncertain, not has_raster and not invisible, small_regions
             finally:
                 page.close()
         finally:
             pdf.close()
+
+
+def _small_text_regions(page, objects, raw):
+    """Group visible small PDF text into at most four bounded page regions."""
+    if page.get_rotation() != 0:
+        return []
+    width, height = page.get_size()
+    groups = {}
+    for obj in objects:
+        if obj.type != raw.FPDF_PAGEOBJ_TEXT or raw.FPDFTextObj_GetTextRenderMode(obj.raw) in (
+            3,
+            7,
+        ):
+            continue
+        size = ctypes.c_float()
+        if not raw.FPDFTextObj_GetFontSize(obj.raw, ctypes.byref(size)) or not 0 < size.value < 8:
+            continue
+        left, bottom, right, top = obj.get_bounds()
+        if right <= left or top <= bottom:
+            continue
+        x0, y0, x1, y1 = (
+            max(0, min(1000, v))
+            for v in (
+                left * 1000 / width,
+                (height - top) * 1000 / height,
+                right * 1000 / width,
+                (height - bottom) * 1000 / height,
+            )
+        )
+        if x1 <= x0 or y1 <= y0:
+            continue
+        key = (int((x0 + x1) >= 1000), int((y0 + y1) >= 1000))
+        groups.setdefault(key, []).append((x0, y0, x1, y1))
+    return [
+        [
+            max(0, min(box[0] for box in boxes) - 15),
+            max(0, min(box[1] for box in boxes) - 15),
+            min(1000, max(box[2] for box in boxes) + 15),
+            min(1000, max(box[3] for box in boxes) + 15),
+        ]
+        for boxes in groups.values()
+    ]
 
 
 def _native_regions(path, idx, items):
@@ -277,12 +321,34 @@ def _ink_outside(preview, items):
     return total, outside
 
 
+def _risky_formula(content, box, image_size):
+    """Recognize small or visibly malformed formulas independently."""
+    text = content.strip()
+    width, height = image_size
+    small = (box[3] - box[1]) * height / 1000 < 24 or (box[2] - box[0]) * width / 1000 < 24
+    malformed = (
+        not text
+        or "\ufffd" in text
+        or text.count("{") != text.count("}")
+        or text.count("$") % 2 != 0
+        or bool(re.search(r"(?:\?\?|�)", text))
+    )
+    return small or malformed
+
+
+def _figure_kind(item):
+    kind = item.get("figure_kind", item.get("asset_type", "unknown"))
+    return kind if kind in {"photo", "drawing", "text", "icon", "mixed", "unknown"} else "unknown"
+
+
 class Pipeline:
     tiers = ("standard", "advanced")
 
     def __init__(self, settings, runtime):
         self.settings = settings
         self.runtime = runtime
+        self.tier = "standard"
+        self._call_count = 0
 
     async def _infer_valid(
         self, images, prompt, validator, diagnostics, page_idx, stage, recovery=None
@@ -294,6 +360,9 @@ class Pipeline:
                 else images
             )
             raw = ""
+            started = time.monotonic()
+            self._call_count += 1
+            call_number = self._call_count
             try:
                 raw = await self.runtime.infer(
                     selected_images,
@@ -307,7 +376,15 @@ class Pipeline:
                 )
                 result = validator(raw)
                 diagnostics.append(
-                    {"page_idx": page_idx, "stage": stage, "attempt": attempt + 1, "raw": raw}
+                    {
+                        "page_idx": page_idx,
+                        "stage": stage,
+                        "purpose": stage,
+                        "call_number": call_number,
+                        "duration_seconds": time.monotonic() - started,
+                        "attempt": attempt + 1,
+                        "raw": raw,
+                    }
                 )
                 return result
             except (ValueError, TypeError, KeyError) as exc:
@@ -315,25 +392,66 @@ class Pipeline:
                     {
                         "page_idx": page_idx,
                         "stage": stage,
+                        "purpose": stage,
+                        "call_number": call_number,
+                        "duration_seconds": time.monotonic() - started,
                         "attempt": attempt + 1,
                         "raw": raw,
                         "error": str(exc),
                     }
                 )
+            except (TimeoutError, asyncio.CancelledError) as exc:
+                diagnostics.append(
+                    {
+                        "page_idx": page_idx,
+                        "stage": stage,
+                        "purpose": stage,
+                        "call_number": call_number,
+                        "duration_seconds": time.monotonic() - started,
+                        "attempt": attempt + 1,
+                        "error": str(exc) or "inference timed out",
+                    }
+                )
+                raise
             except RuntimeError as exc:
                 diagnostics.append(
                     {
                         "page_idx": page_idx,
                         "stage": stage,
+                        "purpose": stage,
+                        "call_number": call_number,
+                        "duration_seconds": time.monotonic() - started,
                         "attempt": attempt + 1,
                         "error": str(exc),
                     }
                 )
+            except Exception as exc:
+                diagnostics.append(
+                    {
+                        "page_idx": page_idx,
+                        "stage": stage,
+                        "purpose": stage,
+                        "call_number": call_number,
+                        "duration_seconds": time.monotonic() - started,
+                        "attempt": attempt + 1,
+                        "error": str(exc) or type(exc).__name__,
+                    }
+                )
+                raise
         raise ValueError(f"Page {page_idx + 1}: {stage} failed validation after retries")
 
     async def parse(
         self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
     ) -> DocumentResult:
+        settings = self.settings.model_copy(deep=True)
+        if tier == "advanced":
+            settings.render_dpi = settings.advanced_render_dpi
+            settings.max_image_side = settings.advanced_max_image_side
+        scoped = Pipeline(settings, self.runtime)
+        scoped.tier = tier
+        return await scoped._parse(input_path, filename, ocr_mode, tier, workdir)
+
+    async def _parse(self, input_path, filename, ocr_mode, tier, workdir):
         suffix = Path(filename).suffix.lower()
         workdir.mkdir(parents=True, exist_ok=True)
         if suffix != ".pdf" and suffix not in IMAGE_EXTENSIONS:
@@ -348,7 +466,7 @@ class Pipeline:
             if count > self.settings.max_pages:
                 raise ValueError("Document exceeds configured maximum page count")
             for idx in range(count):
-                image, native, uncertain, compare = await asyncio.to_thread(
+                image, native, uncertain, compare, small_regions = await asyncio.to_thread(
                     _pdf_snapshot, input_path, idx, self.settings, workdir
                 )
 
@@ -368,6 +486,7 @@ class Pipeline:
                         recovery,
                         compare,
                         input_path,
+                        small_regions=small_regions,
                     )
                 )
         else:
@@ -377,6 +496,7 @@ class Pipeline:
                 raise ValueError("Document exceeds configured maximum page count")
             for idx in range(count):
                 original = await asyncio.to_thread(_image_frame, input_path, idx)
+                original.save(workdir / f"source-{idx}.png")
                 image = original.copy()
                 image.thumbnail((self.settings.max_image_side, self.settings.max_image_side))
 
@@ -404,8 +524,8 @@ class Pipeline:
         if not pages:
             raise ValueError("Document has no pages")
         result = DocumentResult(pages=pages, assets=assets, diagnostics=diagnostics)
-        if tier == "advanced":
-            from .verification import verify_page
+        if tier in {"standard", "advanced"}:
+            from .verification import verify_page, verify_suspicious_regions
 
             for page in pages:
                 if not page.blocks:
@@ -415,17 +535,81 @@ class Pipeline:
                     recovery = partial(
                         _pdf_snapshot, input_path, page.page_idx, self.settings, workdir, True
                     )
-                await verify_page(
-                    self, page, workdir / f"page-{page.page_idx}.png", diagnostics, recovery
-                )
+                if tier == "advanced":
+                    crop_pdf = (
+                        partial(
+                            _formula_crop,
+                            input_path,
+                            page.page_idx,
+                            image=None,
+                            workdir=workdir,
+                            settings=self.settings,
+                        )
+                        if suffix == ".pdf"
+                        else None
+                    )
+                    await verify_page(
+                        self,
+                        page,
+                        workdir / f"page-{page.page_idx}.png",
+                        diagnostics,
+                        recovery,
+                        crop_pdf=crop_pdf,
+                        region_imagepath=(workdir / f"source-{page.page_idx}.png")
+                        if suffix != ".pdf"
+                        else None,
+                    )
+                else:
+                    await verify_suspicious_regions(
+                        self,
+                        page,
+                        workdir
+                        / (
+                            f"page-{page.page_idx}.png"
+                            if suffix == ".pdf"
+                            else f"source-{page.page_idx}.png"
+                        ),
+                        diagnostics,
+                        partial(
+                            _formula_crop,
+                            input_path if suffix == ".pdf" else None,
+                            page.page_idx,
+                            image=None,
+                            workdir=workdir,
+                            settings=self.settings,
+                        )
+                        if suffix == ".pdf"
+                        else None,
+                    )
         if self.settings.cross_page_tables and len(pages) > 1:
-            if tier == "advanced" or len(pages) >= 3:
+            if tier == "advanced":
                 from .tables import reconstruct_tables, render_table_html
+
+                pipeline = self
+
+                class DiagnosticRuntime:
+                    async def infer(self, images, prompt, *, max_tokens):
+                        started = time.monotonic()
+                        pipeline._call_count += 1
+                        number = pipeline._call_count
+                        try:
+                            return await pipeline.runtime.infer(
+                                images, prompt, max_tokens=max_tokens
+                            )
+                        finally:
+                            diagnostics.append(
+                                {
+                                    "stage": "cross_page_table_advanced_call",
+                                    "purpose": "cross_page_table_advanced",
+                                    "call_number": number,
+                                    "duration_seconds": time.monotonic() - started,
+                                }
+                            )
 
                 await reconstruct_tables(
                     result,
                     workdir,
-                    self.runtime,
+                    DiagnosticRuntime(),
                     render_table_html,
                     max_tokens=self.settings.runtime.max_tokens,
                 )
@@ -519,6 +703,7 @@ class Pipeline:
         compare_native=False,
         pdf_path=None,
         original_image=None,
+        small_regions=(),
     ):
         path, preview, preview_path = await asyncio.to_thread(
             _prepare_page_images, image, workdir, idx, self.settings.preview_side
@@ -586,6 +771,19 @@ class Pipeline:
             "structured",
             recovery,
         )
+        if pdf_path and small_regions:
+            from .verification import verify_small_text_regions
+
+            await verify_small_text_regions(
+                self,
+                idx,
+                input_items=items,
+                regions=small_regions,
+                pdf_path=pdf_path,
+                image=image,
+                workdir=workdir,
+                diagnostics=diagnostics,
+            )
         native_regions = {}
         if (
             pdf_path
@@ -596,7 +794,9 @@ class Pipeline:
         blocks = []
         for n, item in enumerate(items):
             category, content, box = item["category"], item["content"], item["bbox"]
-            if category in {"display_formula", "inline_formula"}:
+            if category in {"display_formula", "inline_formula"} and (
+                self.tier == "advanced" or _risky_formula(content, box, image.size)
+            ):
                 crop_path = await asyncio.to_thread(
                     _formula_crop,
                     pdf_path,
@@ -666,7 +866,20 @@ class Pipeline:
                     content=content,
                     bbox=bbox,
                     image_source=source,
-                    metadata={"source": provenance, "category": category},
+                    metadata={
+                        "source": provenance,
+                        "category": category,
+                        **(
+                            {
+                                "asset_type": _figure_kind(item),
+                                "source_page": idx,
+                                "source_bbox": bbox,
+                                "source_pdf": bool(pdf_path),
+                            }
+                            if source
+                            else {}
+                        ),
+                    },
                 )
             )
         attached = set()
