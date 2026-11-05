@@ -48,9 +48,19 @@ class Runtime:
 
 
 class TableRuntime:
-    def __init__(self, outputs: list[str], markdown: list[str], merges: list[str]) -> None:
+    def __init__(
+        self,
+        outputs: list[str],
+        markdown: list[str],
+        merges: list[str],
+        *,
+        first_page: int | None = None,
+    ) -> None:
         self.outputs, self.markdown, self.merges = outputs, markdown, iter(merges)
         self.calls = []
+        self.first_page = first_page
+        self.first_page_done = asyncio.Event()
+        self.output_order: list[int] = []
 
     async def infer(self, images: list[Path], prompt: str, *, max_tokens: int | None = None) -> str:
         self.calls.append((images, prompt))
@@ -67,6 +77,12 @@ class TableRuntime:
             ).read_text()
         ):
             return self.markdown[index]
+        if self.first_page is not None:
+            if index != self.first_page:
+                await self.first_page_done.wait()
+            self.output_order.append(index)
+            if index == self.first_page:
+                self.first_page_done.set()
         return self.outputs[index]
 
 
@@ -214,7 +230,10 @@ async def test_invalid_output_fails_instead_of_empty_success(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path: Path) -> None:
+@pytest.mark.parametrize("first_page", [0, 1])
+async def test_cross_page_table_keeps_fragments_and_merges_markdown(
+    tmp_path: Path, first_page: int
+) -> None:
     path = tmp_path / "tables.tiff"
     first = Image.new("RGB", (100, 100), "black")
     first.save(path, save_all=True, append_images=[first])
@@ -231,14 +250,11 @@ async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path: Pa
         )
 
     merged = "<table><tr><td>A</td></tr><tr><td>B</td></tr></table>"
-    runtime = Runtime(
-        [
-            assessment(tables=True),
-            table("A"),
-            assessment(tables=True),
-            table("B"),
-            json.dumps([{"source_pages": [1, 2], "html": merged}]),
-        ]
+    runtime = TableRuntime(
+        [table("A"), table("B")],
+        [],
+        [json.dumps([{"source_pages": [1, 2], "html": merged}])],
+        first_page=first_page,
     )
     result = await Pipeline(Settings(), runtime).parse(
         path, path.name, "auto", "standard", tmp_path / "out"
@@ -248,6 +264,7 @@ async def test_cross_page_table_keeps_fragments_and_merges_markdown(tmp_path: Pa
     assert "A" in result.pages[0].blocks[0].content
     assert "B" in result.pages[1].blocks[0].content
     assert result.pages[1].blocks[0].metadata["continues_from_page"] == 0
+    assert runtime.output_order == [first_page, 1 - first_page]
 
 
 @pytest.mark.asyncio
@@ -268,14 +285,10 @@ async def test_cross_page_table_rejects_invented_cells(tmp_path: Path) -> None:
         )
 
     invented = "<table><tr><td>A</td><td>B</td><td>C</td></tr></table>"
-    runtime = Runtime(
-        [
-            assessment(tables=True),
-            table("A"),
-            assessment(tables=True),
-            table("B"),
-            json.dumps([{"source_pages": [1, 2], "html": invented}]),
-        ]
+    runtime = TableRuntime(
+        [table("A"), table("B")],
+        [],
+        [json.dumps([{"source_pages": [1, 2], "html": invented}])],
     )
     result = await Pipeline(Settings(), runtime).parse(
         path, path.name, "auto", "standard", tmp_path / "out"
