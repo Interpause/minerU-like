@@ -2,6 +2,20 @@
 
 Local OvisOCR3 document parsing with the asynchronous uploads/jobs API consumed by llm-for-zotero 3.9.16. Python, FastAPI and uv; one command manages the API and its inference subprocess after setup. Parsing uses local assets. An external inference endpoint is also supported.
 
+## Features
+
+- **Zotero compatibility:** upload, parse, poll, cancel, and download through the unchanged llm-for-zotero 3.9.16 client.
+- **Local inference:** managed llama.cpp with a private automatic port, or an external compatible endpoint; CUDA and CPU modes.
+- **Visual-first PDF and image parsing:** assess each page, reuse trusted digital text, and visually transcribe scans without trusting their OCR layers.
+- **Two effort tiers:** selective recovery in Standard; higher-resolution sources, every identified formula, and independent Markdown verification in Advanced.
+- **Rich results:** Markdown, structured pages, equations, tables, source figure assets, printed captions, and labeled generated descriptions/diagrams.
+- **Native document adapters:** Office, OpenDocument, HTML/MHTML, EPUB, OFD, CSV, and TSV through DocVortex, with optional headless LibreOffice/Flatpak visual recovery.
+- **Source-faithful assets:** isolated SVG export with live text and raster fallback; measured PNG/WebP trials with content-aware presets and a 10% minimum savings rule.
+- **Durable local jobs:** SQLite recovery, bounded queue and storage reservations, cancellation, result retention, and inspectable diagnostics.
+- **One-command operation after setup:** locked uv dependencies, checksum-checked inference assets, encoder provisioning, direct submission CLI, and renderer diagnostics.
+
+Some capabilities have only generated-fixture or mocked integration coverage; CUDA memory and host Flatpak execution remain unverified. See [CHANGELOG.md](CHANGELOG.md) for release evidence and limitations, and [TODO.md](TODO.md) for remaining implementation and validation work.
+
 ## Setup and run
 
 Linux x86_64 is the initial target. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:

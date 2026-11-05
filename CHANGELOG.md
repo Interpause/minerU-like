@@ -1,0 +1,105 @@
+# Changelog
+
+## 0.1.0 — 2026-11-05
+
+Initial local, single-user document parsing server. Compatibility targets the uploads/jobs protocol consumed by **llm-for-zotero 3.9.16**, without plugin modifications; this is not a complete implementation of every MinerU API.
+
+### API and durable job processing
+
+- Implemented capability/health and tier discovery, upload creation, streamed PUT, upload completion, job submission/polling/cancellation, and ZIP retrieval.
+- Kept API health responsive while the inference engine loads asynchronously, with separate engine readiness/device reporting.
+- Added optional Bearer authentication on work/data routes; health remains unauthenticated for the plugin's process manager.
+- Added SQLite upload/job records, immutable result publication, declared upload-size checks, per-file and storage-reservation limits, one active worker, and a bounded waiting queue.
+- Restore compatible queued jobs after restart; fail interrupted work or queued work whose recorded configuration changed. Store redacted effective configuration snapshots and hashes.
+- Enforce exclusive ownership of each data directory. Clean abandoned temporary/output artifacts, preserve failed-job diagnostics, protect active inputs, and expire results/uploads according to retention settings.
+- Validate sequential page indices, block/caption shapes, safe asset paths, JSON values, and Markdown/HTML/structured image references before atomically publishing a ZIP.
+
+### Inference runtime and provisioning
+
+- Added Python/FastAPI packaging, a uv lockfile, validated TOML settings, and an installed console entry point.
+- Manage pinned llama-server build **b12110 / cd959bae9** as an owned subprocess on a randomly available loopback port, with a private API key and bind-collision retries.
+- Support external inference endpoints, optional authentication/model aliases, and URLs with or without a trailing `/v1`. Never terminate or reconfigure the external service.
+- Added model/projector GGUF and Git LFS placeholder checks, managed binary-version checks, model discovery, startup readiness checks, and explicit load failures.
+- Support `auto`, `cuda`, and `cpu` device modes. Automatic CPU fallback is logged; explicit CUDA requests fail when unavailable.
+- Serialize inference requests; preserve the configured image/context/output budgets and reject KV quantization below Q8_0.
+- Added managed prompt/context preflight, absolute generation deadlines, incomplete-response detection, bounded error excerpts, and call timing/token-usage logging.
+- Cancel, terminate, and reap owned processes safely, including repeated cancellation; restart a canceled managed engine before subsequent inference.
+- Added local inference-asset checksum registration/verification and an explicit HTTPS/checksum asset download command. Normal parsing does not download models or runtimes.
+- Explicit setup can provision checksum-pinned **cwebp 1.6.0** on Linux x86_64, including its distribution notices. Support configured/local encoders and lossless-only fallback when unavailable.
+
+### PDF, image, and effort policies
+
+- Inspect PDF text visibility, raster/vector content, font quality/size, and geometry on CPU; assess every visual page through a low-resolution Ovis request.
+- Reuse trustworthy digital prose. Exclude scan-backed, invisible, uncertain, or force-OCR text layers from native transcription.
+- Added structured visual extraction, source crops, native/visual provenance, real image assets, and deterministic Markdown/result assembly. Preserve blank physical pages and meaningful input frames.
+- Support PDF and PNG/JPEG/WebP/GIF/BMP/TIFF/JP2 input routing; generated tests cover a subset, not every real-world encoding.
+- **Standard:** 200-DPI sources capped at a 2880-pixel long edge, selective region verification, and dedicated recognition for small or suspicious formulas.
+- **Advanced:** 300-DPI sources capped at a 4096-pixel long edge, dedicated recognition of every identified formula, independent full-page Markdown generation, and targeted reconciliation of disagreements.
+- Keep the model token/context budgets unchanged between tiers. Use higher-resolution source-region crops and bounded small-text checkpoints where whole-page preprocessing can discard detail.
+- Added validation retries, coverage checks, native/visual disagreement checks, and explicit failure for unresolved material omissions or malformed output.
+- Corrected a real small-text false positive caused by comparing crop header numbers without including the original header evidence.
+- Added labeled figure/chart descriptions and supplemental Mermaid output without replacing source images or printed captions. Reuse existing classifications/descriptions for encoder hints; no classification-only inference request.
+- Added adjacent table reconstruction in Standard and recursive right-to-left reconstruction in Advanced, with rendered intermediate evidence, exact source-cell preservation, and conservative refusal of ambiguous or image-bearing merges.
+- Preserve original table fragments in structured pages while accepted merged tables appear once in document Markdown. Independent plugin upload chunks remain independent jobs.
+
+### Native formats and LibreOffice visual evidence
+
+- Added DocVortex 0.6.13 adapters for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV, and TSV.
+- Preserve supported native prose, tables, links, nested lists, and structured equations. Visually enrich extracted raster content while retaining the source asset.
+- Added source math/media and selected Office feature inventory, incomplete-block diagnostics, sparse/broken conversion checks, and explicit errors when material content cannot be recovered.
+- Added optional managed headless system LibreOffice and Flatpak backends, private profiles, staged input copies, bounded output/deadlines, and cancellation of only the owned process/Flatpak instance.
+- Use the installed Flatpak application's published entry point. No permanent Flatpak overrides, manually managed daemon, or UNO-enabled Python environment is required.
+- Trigger visual recovery for charts, grouped/floating objects, missing equations/assets, and suspicious native conversion. Ordinary native tables remain native.
+- Retain complete native spreadsheet cells; use PDF export settings that bypass print ranges and split oversized rendered sheets into bounded overlapping regions. Reject attempts to replace failed cell extraction with PDF OCR.
+- Match visual supplements through text anchors when possible, otherwise label their renderer page/region as unmatched. Namespace copied assets/references consistently and retain renderer/inference diagnostics.
+- Deduplicate already-preserved native formulas against rendered supplements by exact normalized formula counts.
+- Permit labeled full visual fallback after failed native conversion for non-spreadsheets. Do not claim source-object identity from recovery counts alone.
+
+### SVG and raster delivery assets
+
+- Added bounded inference rasterization of supported extracted SVG assets while preserving their originals. Reject unsafe resources and unverifiable HTML/EPUB inline SVG preservation.
+- Added source PDF vector export through PyMuPDF, keeping text as text and preserving supported source drawing operations, clipping, and embedded images.
+- Remove unrelated paint/resources and refuse uncertain isolation, unsupported geometry, and partially clipped page images. Do not trace scanned diagrams into vectors.
+- Compare candidate SVGs against independent PDFium crops on white and black backgrounds; retain raster assets when fonts, geometry, transparency, or fidelity are uncertain.
+- Recover original compressed embedded raster bytes where footprint and independent-render checks permit it.
+- After inference, trial optimized PNG, lossless WebP, and lossy WebP qualities **95/90/85/80** for static referenced rasters, including already-compressed inputs, without resizing.
+- Select content-aware encoder presets from existing Ovis information or CPU heuristics. Replace an asset only when the smallest accepted candidate saves **at least 10%** against the original bytes.
+- Preserve/check EXIF orientation, transparency, dimensions, ICC data, and PNG color signaling. Reject WebP candidates when PNG color signaling cannot be preserved directly. Retain animation unchanged.
+- Added bounded-memory CPU global/local similarity and signed-edge checks, adversarial small-mark regressions, and cooperative cancellation with encoder process cleanup. These checks reduce risk, not prove semantic equivalence.
+- Stage asset changes before publication; rewrite Markdown, HTML, structured image fields, and source-image metadata consistently.
+- Hash-name final images to avoid collisions in the plugin's flattened image cache, coalesce identical assets, and omit unreferenced delivery images.
+
+### CLI, packaging, and documentation
+
+- Added `setup`, `serve`, `doctor`, `download-asset`, `submit`, `status`, `cancel`, and `download` commands.
+- Added renderer discovery and an explicit Office-to-PDF smoke command, configurable parsing/resource controls, operational documentation, configuration examples, and third-party notices.
+- Build wheel and source distributions with packaged task prompts and notices; support offline operation after dependency/tool/model setup.
+
+### Validation recorded for this release
+
+The latest implementation run recorded **139 passed, 1 skipped**, with unchanged-plugin integration and a real `cwebp` encoder enabled. The skipped test was the opt-in live Flatpak conversion smoke. Running without the optional test prerequisites skips additional integration checks.
+
+| Area | Evidence and limits |
+| --- | --- |
+| Automated API/runtime checks | Upload/job/auth flows, queue/storage limits, restart/retention, exclusive ownership, malformed output, timeout/cancellation, and process cleanup. Many failure paths use controlled substitutes. |
+| Plugin integration | Unchanged client upload/poll/download and PNG/WebP/SVG ZIP normalization passed. A real digital PDF also completed through the client. No live Zotero GUI/cache session was exercised. |
+| Live inference | Managed Q6_K and BF16 CPU requests completed. Simple Standard/Advanced digital-page jobs used one/two calls. A richer Q6_K PDF completed with 15 blocks and seven calls, including four small-text checkpoints. No representative quality benchmark or CUDA measurement. |
+| Native conversion | Generated DOCX/PPTX/XLSX/RTF/ODT/ODS/ODP/EPUB/HTML/MHTML/CSV/TSV fixtures, equations/images, and selected failure/recovery cases. Representative legacy DOC/PPT/XLS and OFD files remain unverified. |
+| LibreOffice | Real system headless DOCX conversion and the CLI smoke command passed. Flatpak lifecycle and visual recovery have controlled tests; the deployment host's Flatpak conversion remains unverified. |
+| Assets | Generated SVG isolation/rotation/mixed-content cases, encoder trials, reference rewriting, metadata and cancellation checks passed. One real figure shrank from 73,781 to 20,910 bytes with the configured fidelity checks. No broad scientific-image corpus validation. |
+| Distribution | Wheel/source builds and installation into a separate environment using cached dependencies passed. Normal parsing was exercised with local inference/tool assets. |
+
+### Known limitations at 0.1.0
+
+- The nominal 6 GB GPU target has **estimated**, not measured, memory usage/headroom. CUDA behavior and BF16-versus-Q6_K quality need deployment validation.
+- Advanced accepts PDF/image inputs only; native-document Advanced verification is not implemented.
+- HTML/EPUB inline SVG can be rejected even when the converter might preserve it; reliable preservation/association is not implemented.
+- Camera perspective/skew recovery and visual orientation detection beyond existing PDF rotation/EXIF handling are not implemented.
+- Source feature detection and object association are heuristic, especially outside the covered Office structures. Complex rendering, fonts, equations, and sparse/mixed content require more real-document testing.
+- SVG recovery is best-effort; unsupported text positioning/definitions/geometry use raster fallback. Animated asset recompression and color-managed transfer of PNG-specific signaling into WebP are not implemented.
+- Cross-page table reconstruction accepts conservative single-table candidates; image-bearing/ambiguous merges remain fragments. Cross-request 200-page chunk stitching has no reliable document correlation in this protocol.
+- Only upload reservations and published outputs are included in the storage budget; work files and retained failure diagnostics can use additional disk space.
+- Managed process logs are temporary but not rotated or size-capped for the lifetime of the child.
+- One document worker and one inference slot are implemented; multi-request inference batching and auxiliary OCR/layout/formula models are not.
+
+See [TODO.md](TODO.md) for the implementation and validation backlog. Deliberate exclusions include cloud API emulation, legacy/full MinerU APIs, multi-user hosting, automatic vector tracing, and model-generated replacement drawings.
