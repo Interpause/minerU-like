@@ -19,7 +19,11 @@ from mineru_like.result import Block, DocumentResult, Page
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asset_format", ["png", "webp", "svg"])
-async def test_plugin_client_lifecycle(tmp_path, asset_format):
+@pytest.mark.parametrize(
+    "tier,force_ocr",
+    [("standard", False), ("advanced", False), ("flash", False), ("basic", True), ("auto", True)],
+)
+async def test_plugin_client_lifecycle(tmp_path, asset_format, tier, force_ocr):
     plugin = os.environ.get("TEST_PLUGIN_ROOT")
     fflate = os.environ.get("FFLATE_MODULE")
     typescript = os.environ.get("TYPESCRIPT_MODULE")
@@ -36,9 +40,13 @@ async def test_plugin_client_lifecycle(tmp_path, asset_format):
         Image.new("RGB", (20, 20), "red").save(asset)
     expected = f"images/{hashlib.sha256(asset.read_bytes()).hexdigest()}.{asset_format}"
 
+    requested_tier = tier
+
     async def parser(*, input_path, filename, ocr_mode, tier, workdir):
         assert input_path.read_bytes() == b"%PDF-test-fixture"
-        assert filename == "fixture.pdf" and ocr_mode == "auto" and tier == "standard"
+        assert filename == "fixture.pdf"
+        assert ocr_mode == ("ocr" if force_ocr else "auto")
+        assert tier == ("advanced" if requested_tier == "advanced" else "standard")
         result = DocumentResult(
             pages=[
                 Page(
@@ -54,8 +62,14 @@ async def test_plugin_client_lifecycle(tmp_path, asset_format):
         finalize_asset_names(result)
         return result
 
+    class Adapter:
+        tiers = ("standard", "advanced")
+
+        async def parse(self, **kwargs):
+            return await parser(**kwargs)
+
     app = create_app(
-        Settings(data_dir=tmp_path / "service", api_key="integration-key"), parser=parser
+        Settings(data_dir=tmp_path / "service", api_key="integration-key"), parser=Adapter().parse
     )
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -73,7 +87,11 @@ async def test_plugin_client_lifecycle(tmp_path, asset_format):
         else:
             pytest.fail("Server startup timed out")
         env = dict(
-            os.environ, TEST_BASE_URL=f"http://127.0.0.1:{port}", TEST_EXPECTED_ASSET=expected
+            os.environ,
+            TEST_BASE_URL=f"http://127.0.0.1:{port}",
+            TEST_EXPECTED_ASSET=expected,
+            TEST_TIER=tier,
+            TEST_FORCE_OCR="1" if force_ocr else "0",
         )
         proc = await asyncio.create_subprocess_exec(
             "node",

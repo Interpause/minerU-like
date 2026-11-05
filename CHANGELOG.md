@@ -2,13 +2,32 @@
 
 ## Unreleased
 
-- Default data storage is now gitignored `data/`, with supplied llama.cpp builds in `data/b12110/`, Q8_0 model/BF16 projector defaults in `data/models/`, and provisioned cwebp under `data/tools/`.
-- Relative configuration paths resolve beside the config file; omitted managed runtime/model paths derive from `data_dir`.
-- Default KV cache precision is BF16. Context remains 32,768 tokens **per slot**, with a 16,384-token output limit and 1,024 minimum image tokens.
-- Expose parallel slots and token batch/microbatch sizes in the template. Managed total context allocation scales by slot count; application inference remains serial.
-- Include the binaries directory in managed subprocess library lookup so optional colocated CUDA libraries work during probing and inference.
-- Audited and documented the distinct PDF/SVG dependencies; retained directly used libraries and the pinned DocVortex version.
-- Validation: 144 tests passed, one opt-in Flatpak launch test skipped; lint passed. A managed CPU image-inference smoke test with Q6_K weights and BF16 KV confirmed two slots with 32,768 tokens each. Q8_0 weights and the default profile's CUDA/6 GB memory peak remain untested.
+### Runtime, configuration, and jobs
+
+- Store assets and jobs in gitignored `data/`. Resolve relative paths beside the config; discover a single supplied llama-server beneath `b*/` or `llama-b*/`, with an explicit path required for multiple candidates. Remove exact runtime build enforcement while retaining local file-integrity hashes.
+- Default to four independent slots, 32,768 context tokens per slot, 16,384 output tokens, BF16 KV, Q8_0 weights, BF16 projector, and 1024/1024 token batches. Expose independent K/V overrides. An omitted or `-1` maximum image-token setting delegates to the backend; the template explicitly selects 8192 and minimum 1024.
+- Submit independent jobs/pages to backend queuing and continuous batching without a job-count admission cap or inference lock. Retain upload/storage limits; legacy `queue_size` is accepted but ignored. Canceling a request no longer restarts a healthy shared backend.
+- Use no overall inference queue/generation deadline by default, with optional explicit deadlines and short connection/health timeouts. Preserve partial responses, raw output, finish reason and usage. Confirm both configured EOS tokens without narrowing the stop set.
+- Complete direct HTTPX2 migration. Include colocated shared libraries during managed subprocess probing and launch. Retain and document the distinct PDF/SVG dependency roles and pinned DocVortex version.
+
+### Parsing and recovery
+
+- Bundle all 18 unchanged task prompts shared by the model examples and both Spaces apps. Replace the invented assessment response with documented layout output; keep task-specific formats and independent requests. Retain documented two-image table reconstruction without unrelated-task multiplexing.
+- Treat PDF text as supporting region evidence, not authoritative reading order or equation semantics. Recognize PDF mathematics visually; keep Standard's selective formula recognition and Advanced's every-formula recognition and independent Markdown pass.
+- Add real DocVortex conversion fixtures for DOCX OMML and HTML/EPUB MathML fractions and superscripts/subscripts; detect MathML source objects in HTML/EPUB inventory so unsupported conversion is not silently accepted.
+- Preserve raw and cleaned Markdown plus cleanup status. Parse valid JSON before recovery; retain complete valid records and usable table fragments from incomplete responses, with explicit warnings and source-page images. Record generated boundary coordinate 1000 without shrinking the crop; reject invalid geometry.
+- Retain source crops and explicitly labeled uncertain text/alternatives for unresolved quality differences, including small text. Compare ordered text and table cells while preserving signs/operators. Recover malformed structured extraction through documented Markdown plus source-image evidence; optional malformed captions do not discard figures.
+- Consider cross-page candidates from either page's table/layout/continuation evidence. Distinguish heuristic skips, explicit model negatives, failed recovery and accepted merges. Target missing fragments at higher resolution, reconstruct backwards using re-rendered updated pages, preserve originals/provenance, and permit removal of one exactly repeated first row. Unsupported/uncertain merges remain separate.
+- Accept Auto as Standard; warn and upgrade direct Flash/Basic requests to Standard. Advertise only implemented tiers so the unchanged plugin's fallback remains accurate.
+
+### Validation and remaining limits
+
+- Final verification: **203 passed, 1 skipped** with plugin, cwebp and live CPU inference enabled. The skipped test is real Flatpak execution. Ruff and source/wheel builds passed; the wheel contains all 18 prompts and dependency notices.
+
+- Add [copyable test instructions](docs/TESTING.md) and an opt-in full-suite runner that checks prerequisites and rejects skips. Separate mocked plugin lifecycle tests from actual model inference tests, including both tiers, lower-tier fallback and Force OCR.
+- Live CPU checks with Q6_K weights/BF16 projector/KV confirm four slots, both EOS tokens, queued image requests, isolated cancellation and retained token-limit responses. A simple digital PDF publishes successfully in both Standard and Advanced. These are smoke checks, not a representative quality or throughput corpus.
+- Q8_0 weights and complete CUDA/6 GB memory peaks remain unverified. The development GPU is visible, but a confirmed nono denial on the CUDA library directory prevents loading cuBLAS and llama.cpp exposes no CUDA device. The real Flatpak smoke test remains blocked by a confirmed sandbox denial on the system Flatpak repository.
+- Real long-document/chunk, difficult equation, camera, and continued-table quality/recall measurements remain in [TODO.md](TODO.md). Intermediate reconstructed pages containing images remain conservatively unsupported; their original fragments are retained.
 
 ## 0.1.0 — 2026-11-05
 

@@ -4,7 +4,7 @@ The task prompt files under `src/mineru_like/prompts/` are reproduced from [ATH-
 
 OvisOCR3 model weights are separate user-provisioned assets under their upstream license. GGUF quantization files must retain their distributor's model notices. This repository does not redistribute model weights or llama.cpp binaries.
 
-Managed inference targets [llama.cpp build b12110](https://github.com/ggml-org/llama.cpp/releases/tag/b12110), commit `cd959bae9`, licensed MIT. Preserve the runtime distribution's own notices when installing it.
+Managed inference uses [llama.cpp](https://github.com/ggml-org/llama.cpp), licensed MIT. No exact build is required. Build b12110 / commit `cd959bae9` was used for the recorded development smoke tests. Preserve the runtime distribution's own notices when installing it.
 
 [DocVortex 0.6.13](https://pypi.org/project/docvortex/0.6.13/) declares `MIT AND Apache-2.0 AND BSD-3-Clause`; its wheel contains notices for bundled components. Python dependencies and transitive dependencies retain their individual licenses. The lockfile records the resolved distributions and hashes; review their installed license files for redistribution.
 

@@ -29,8 +29,8 @@ assert.equal(service.api, 'v1');
 const reports = [];
 const result = await client.parseMineruV1({
   baseUrl, fileName: realPdf ? 'digital.pdf' : 'fixture.pdf', pdfBytes: realPdf ? new Uint8Array(readFileSync(realPdf)) : new TextEncoder().encode('%PDF-test-fixture'), service,
-  options: {tier:'standard', effort:'medium', imageAnalysis:true, serverUrl:baseUrl, apiKey},
-  forceOcr:false, report: s => reports.push(s),
+  options: {tier:process.env.TEST_TIER || 'standard', effort:'medium', imageAnalysis:true, serverUrl:baseUrl, apiKey},
+  forceOcr:process.env.TEST_FORCE_OCR === '1', report: s => reports.push(s),
 });
 assert.equal(result.pageCount, 1);
 if (!realPdf) assert.match(result.mdContent, /Fixture title/);
@@ -46,4 +46,5 @@ if (!realPdf) {
   if (process.env.TEST_OUTPUT) writeFileSync(process.env.TEST_OUTPUT, JSON.stringify({service, pageCount: result.pageCount, markdown: result.mdContent, content, files: result.files.map(f => f.relativePath), reports}, null, 2));
 }
 assert.ok(reports.some(s => s.includes('Downloading')));
+if (['flash', 'basic'].includes(process.env.TEST_TIER)) assert.ok(reports.some(s => s.includes("isn't offered")));
 console.log(JSON.stringify({service, pageCount:result.pageCount, files:result.files.map(f => f.relativePath), reports}));

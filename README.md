@@ -6,12 +6,12 @@ Local OvisOCR3 document parsing with the asynchronous uploads/jobs API consumed 
 
 - **Zotero compatibility:** upload, parse, poll, cancel, and download through the unchanged llm-for-zotero 3.9.16 client.
 - **Local inference:** managed llama.cpp with a private automatic port, or an external compatible endpoint; CUDA and CPU modes.
-- **Visual-first PDF and image parsing:** assess each page, reuse trusted digital text, and visually transcribe scans without trusting their OCR layers.
+- **Visual-first PDF and image parsing:** use documented layout and extraction tasks, check native prose as supporting evidence, and read PDF equations visually.
 - **Two effort tiers:** selective recovery in Standard; higher-resolution sources, every identified formula, and independent Markdown verification in Advanced.
 - **Rich results:** Markdown, structured pages, equations, tables, source figure assets, printed captions, and labeled generated descriptions/diagrams.
 - **Native document adapters:** Office, OpenDocument, HTML/MHTML, EPUB, OFD, CSV, and TSV through DocVortex, with optional headless LibreOffice/Flatpak visual recovery.
 - **Source-faithful assets:** isolated SVG export with live text and raster fallback; measured PNG/WebP trials with content-aware presets and a 10% minimum savings rule.
-- **Durable local jobs:** SQLite recovery, bounded queue and storage reservations, cancellation, result retention, and inspectable diagnostics.
+- **Durable local jobs:** SQLite recovery, concurrent jobs with backend inference queuing, storage reservations, isolated cancellation, and inspectable diagnostics.
 - **One-command operation after setup:** locked uv dependencies, checksum-checked inference assets, encoder provisioning, direct submission CLI, and renderer diagnostics.
 
 Some capabilities have only generated-fixture or mocked integration coverage; CUDA memory and host Flatpak execution remain unverified. See [CHANGELOG.md](CHANGELOG.md) for release evidence and limitations, and [TODO.md](TODO.md) for remaining implementation and validation work.
@@ -25,11 +25,11 @@ uv sync --locked
 cp config.example.toml config.local.toml
 ```
 
-The default, gitignored `data/` directory holds supplied inference assets, provisioned tools, and job data. Put **llama-server build b12110 / commit cd959bae9** in its build directory and the **Q8_0 model / BF16 projector** in `models/`:
+The default, gitignored `data/` directory holds supplied inference assets, provisioned tools, and job data. Put a compatible **llama-server** distribution in a build directory and the **Q8_0 model / BF16 projector** in `models/`:
 
 ```text
 data/
-  b12110/
+  llama-bNNNNN/
     llama-server
     libggml-*.so, libllama.so, ...
     optional CUDA shared libraries
@@ -41,9 +41,9 @@ data/
   uploads/, outputs/, work/, failures/, state.sqlite3, ...
 ```
 
-Keep the complete llama.cpp binaries folder together. Optional CUDA libraries placed beside the executable are included in the managed child's library search path, including during device detection. Model weights and llama.cpp binaries are supplied by the user. Setup records their SHA-256; startup verifies the registered files. You can override these paths or choose another quant explicitly. The tested runtime build remains pinned.
+Keep the complete llama.cpp binaries folder together. Optional CUDA libraries placed beside the executable are included in the managed child's library search path, including during device detection. Model weights and llama.cpp binaries are supplied by the user. Setup records their SHA-256; startup verifies the registered files. You can override these paths or choose another quant explicitly. No exact llama.cpp version is enforced. An incompatible binary or API reports its actual startup/request error.
 
-Relative paths, including `data_dir`, resolve beside the configuration file, so the command can be launched from another working directory with an absolute config path. If managed model/runtime paths are omitted, they default beneath the configured data directory using the layout above. Absolute paths remain supported.
+Relative paths, including `data_dir`, resolve beside the configuration file, so the command can be launched from another working directory with an absolute config path. Omitted model/projector paths default beneath the configured data directory. An omitted binary is discovered under `b*/llama-server` or `llama-b*/llama-server`; multiple candidates require an explicit `runtime.binary`. Absolute paths remain supported.
 
 When compression is enabled, explicit setup also provisions the reference `cwebp` 1.6.0 encoder on Linux x86_64 if none is installed or configured. Its download URL and SHA-256 are pinned; the distribution includes its notices. Use `setup --skip-cwebp` for offline setup or configure your own encoder. Ordinary parsing never downloads tools. Without `cwebp`, lossless trials remain available and diagnostics report that named-preset lossy trials were skipped.
 
@@ -86,7 +86,11 @@ uv run --locked mineru-like download OUTPUT_FILE_ID --output result.zip
 
 ## Parsing policy
 
-Every PDF/image page receives a low-resolution visual assessment. CPU inspection supplies text visibility, raster/vector and font evidence. Clean digital prose may reuse native text. Scanned or ambiguous pages use visual transcription regardless of any OCR text layer. Math, complex layouts, small text and visual content trigger additional work. Assessment failures choose visual processing conservatively; malformed final output and unrecovered missing content fail the job. Model output is evidence, not a guarantee of exact transcription.
+Every PDF/image page receives a low-resolution layout request using the supplied Ovis task template. PDF text elements are supporting evidence, not authoritative reading order or semantics. Equations are read visually even in digital-born PDFs; clean prose can support region-level comparisons, while scans and forced OCR never trust existing text layers. Native OMML/MathML equations are retained where DocVortex supports their structure, with missing-equation inventory and generated conversion tests. Neither counts nor successful conversion prove general semantic fidelity.
+
+The 18 bundled task prompts follow the shared model examples and Spaces contracts. Independent pages use independent requests; the documented two-image task is reserved for related-page reconstruction. Raw text, finish reason and usage survive before cleanup. Markdown repeated-tail cleanup retains raw and cleaned output with a change flag. Valid structured JSON is parsed unchanged; damaged responses can retain validated complete records and table fragments as explicitly incomplete output. A token-limit finish never becomes a claim of completeness.
+
+Unresolved quality disagreements retain source images alongside labeled uncertain text rather than fail the whole document. Malformed structured extraction falls back to Markdown and the page image. Backend/input failures remain errors. Source-region recovery uses higher effective resolution; generated boundary coordinate 1000 is accepted and recorded, while reversed, empty or out-of-range boxes trigger recovery.
 
 PDF and image parsing uses PDFium/Pillow plus Ovis. Images include PNG, JPEG, WebP, GIF, BMP, TIFF and JP2; multi-frame inputs retain their frames. Native conversion uses DocVortex 0.6.13 for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV and TSV. Native equations are retained when conversion succeeds; extracted raster content receives visual enrichment. Optional LibreOffice rendering supplies missing or questionable Office visual evidence. Extracted SVG assets are rasterized for inference while retaining their originals; inline SVG in HTML/EPUB is currently rejected because its preservation through native conversion cannot be verified.
 
@@ -100,11 +104,11 @@ The plugin sends tier and OCR mode. Its legacy effort and image-analysis control
 | Extraction source render | 200 DPI, at most 2880px long edge | 300 DPI, at most 4096px long edge |
 | Dedicated formula recognition | Small or suspicious formulas; otherwise reuse extraction | Every identified inline/display formula |
 | Model-based verification | Suspicious regions only | Independent full-page Markdown plus targeted disagreement recovery |
-| Cross-page tables | Adjacent candidate pairs | Recursive longer runs, rendering accepted intermediate content |
+| Cross-page tables | Adjacent candidates and backward recursive reconstruction | Same reconstruction with higher-resolution page evidence |
 | Meaningful figure descriptions | Enabled | Enabled |
 | Source SVG recovery and compression | Enabled | Enabled |
 
-Both tiers keep the same model image-token/context limits. Higher-resolution source-region crops protect small text where whole-page preprocessing would discard detail. Advanced's independent pass is a separate generation from the same model, not an independent ground truth. Unresolved material disagreements fail explicitly. Cross-page reconstruction retains source fragments and requires exact source-cell preservation; ambiguous or unsupported merges remain separate. Native documents continue to support Standard only.
+Both tiers keep the same model image-token/context limits. Higher-resolution source-region crops protect small text where whole-page preprocessing would discard detail. Advanced's independent pass is a separate generation from the same model, not an independent ground truth. Unresolved material disagreements are labeled with source-image evidence. Either adjacent page can nominate a table candidate through layout or transcription hints. Independent page parses feed the two-image reconstruction task; longer runs merge backwards with re-rendered intermediate pages. Heuristic skips and explicit model negatives are distinct. Ambiguous or unsupported merges retain the independent source fragments. Native documents continue to support Standard only.
 
 ### Headless LibreOffice
 
@@ -137,21 +141,23 @@ CPU checks preserve dimensions, orientation, transparency and color handling, an
 
 ## Operation and resources
 
-One worker serializes documents and model requests; the default queue accepts eight waiting jobs. SQLite retains job/upload metadata. Completed artifacts are immutable; interrupted running jobs fail clearly after restart and compatible queued jobs resume. Queued jobs whose effective configuration changed require resubmission. A data directory has one exclusive server owner. Shutdown cancels work and reaps owned inference processes. External services survive cancellation and shutdown.
+Jobs run independently and pages submit independent requests to llama.cpp, which queues them behind its configured slots. There is no job-count admission cap or application inference semaphore. Legacy `queue_size` is accepted but ignored. CPU image preparation is limited separately, and prepared images are kept on disk rather than held throughout inference. SQLite retains job/upload metadata. Completed artifacts are immutable; interrupted running jobs fail clearly after restart and compatible queued jobs resume. Queued jobs whose effective configuration changed require resubmission. A data directory has one exclusive server owner. Shutdown cancels work and reaps owned inference processes. External services survive cancellation and shutdown.
 
 Default retention is 24 hours after terminal status or last result download; abandoned uploads expire after one hour. Failed-job work, including raw model responses, stays under the data directory's `failures/` until retention expires. Treat that directory as document data. Canceled unpublished work is removed. `max_upload_bytes` limits each file; `max_storage_bytes` bounds upload reservations plus published outputs. Temporary renders and retained failure diagnostics can consume additional space.
 
-The default managed profile uses **Q8_0 model weights, a BF16 projector, BF16 KV, one slot, 32,768 context tokens per slot, and a 16,384-token output limit**. `image_min_tokens = 1024` and `image_max_tokens = 4096` bound each image's requested token range. BF16 and Q6_K model weights, and f16 or Q8_0 KV, remain explicit alternatives; lower KV precision is rejected. Weight quantization and KV precision are separate settings. The default Q8_0 profile still needs measured CUDA/6 GB validation. Earlier rough estimates of 3–4 GiB for BF16 weights and 2.2–3.2 GiB for Q6_K weights are not measured peaks or a Q8_0 guarantee.
+The default managed profile uses **Q8_0 model weights, a BF16 projector, BF16 KV, four slots, 32,768 context tokens per slot, and a 16,384-token output limit**. `image_min_tokens = 1024` is passed by default. Omitted or `-1` `image_max_tokens` uses the backend/model default; the example config explicitly selects 8192. `kv_cache_k` and `kv_cache_v` independently override the common cache setting. BF16 and Q6_K model weights, and f16 or Q8_0 KV, remain explicit alternatives; lower KV precision is rejected. Weight quantization and KV precision are separate settings. The default Q8_0 profile still needs measured CUDA/6 GB validation. Earlier rough estimates of 3–4 GiB for BF16 weights and 2.2–3.2 GiB for Q6_K weights are not measured peaks or a Q8_0 guarantee.
 
 | Runtime setting | Meaning | Default |
 | --- | --- | --- |
 | `context_size` | Input, image and generated tokens available to each slot | 32768 |
-| `parallel_slots` | Backend request slots; total context allocation is slots × per-slot context | 1 |
+| `parallel_slots` | Backend request slots; total context allocation is slots × per-slot context | 4 |
 | `max_tokens` | Maximum generated tokens for one request, within that slot's context | 16384 |
-| `batch_size` | Logical token batch size used during inference/prompt processing | 512 |
-| `ubatch_size` | Physical compute microbatch; affects compute memory and throughput | 128 |
+| `batch_size` | Logical token batch size used during inference/prompt processing | 1024 |
+| `ubatch_size` | Physical compute microbatch; affects compute memory and throughput | 1024 |
 
-Token batching helps a **single request** process its prompt. Batching concurrent requests requires multiple slots and application scheduling; one user could generate such requests for independent pages/crops, but the current document worker and inference adapter are serial. Increasing `parallel_slots` alone reserves more context without making parsing concurrent. The managed command passes total `--ctx-size = context_size * parallel_slots` with fixed per-slot allocation; keep one slot for the default 6 GB profile. External services manage their own slot allocation.
+Token batching processes tokens within a request; continuous backend batching also serves independent requests across slots. Managed `--ctx-size` is `context_size * parallel_slots` with fixed per-slot allocation. External services manage their own slot allocation. No unrelated pages/crops are combined into a synthetic ID-based prompt.
+
+Inference has no overall queue/generation deadline by default. Optional `request_timeout` bounds it explicitly; connection and health checks retain short timeouts. Cancellation closes that job's requests without restarting a shared healthy backend. Four-slot BF16 full-attention KV is estimated at 1.5 GiB, excluding model/projector, recurrent state and compute allocations. The complete CUDA target is at most 5 GiB for headroom; this remains unmeasured.
 
 No additional GPU models are loaded. CPU native extraction and rendering are practical; Ovis vision and generation on CPU are considerably slower. The tested Q6_K one-page structured request took about 44 seconds on the development machine; this is not a latency guarantee.
 
@@ -165,7 +171,9 @@ uv run --locked ruff check src tests
 uv build
 ```
 
-The opt-in integration harness in `tests/integration/` loads an unchanged plugin checkout. Set `TEST_PLUGIN_ROOT`, `TYPESCRIPT_MODULE` (its TypeScript compiler module), and `FFLATE_MODULE` (its ZIP dependency module), and use Node 26. The default integration test injects a test parser; the harness also accepts a real running service and PDF through environment variables documented in its source. Real CPU checks have exercised managed inference and the unchanged plugin's upload/download/result-normalization path. Set `MINERU_TEST_CWEBP` to a local encoder path for real preset tests, and `MINERU_LIKE_TEST_FLATPAK=1` for the installed Flatpak conversion smoke. A live Zotero GUI/cache session and measured 6 GB GPU peaks remain unverified.
+See [the testing guide](docs/TESTING.md) for copyable prerequisites and commands, including the unchanged plugin client, real cwebp, Flatpak conversion and live inference. `uv run python scripts/run_tests.py --all --plugin-root /path/to/llm-for-zotero --config /path/to/config.local.toml` enables every integration and fails on missing prerequisites or skipped tests. Ordinary tests may skip unavailable integrations.
+
+The plugin lifecycle tests use a controlled parser; they do not run the model. Live runtime tests separately load the supplied GGUF/backend, force each configured EOS token to confirm termination, and send more image requests than available slots. They write `validation/live-runtime.json` beneath the selected data directory. CPU four-slot/Q6_K/BF16-KV checks have passed; Q8_0 weights, CUDA memory peaks and a live Zotero GUI/cache session remain unverified.
 
 Runtime diagnostics distinguish model-call purpose/count/duration from `source_assets_cpu` and `compression_cpu` checks. The regression suite runs offline from the service: it is never executed during a parse.
 
