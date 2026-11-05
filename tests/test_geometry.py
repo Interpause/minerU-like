@@ -6,6 +6,9 @@ def test_grid_bounds_and_orientation() -> None:
     assert ovis_size((200, 400), 196, 8192) == (320, 640)
     assert ovis_size((400, 200), 196, 8192) == (640, 320)
     assert ovis_size((4000, 4000), 196, 8100) == (2880, 2880)
+    # The backend clamps the short edge after scaling, which can exceed the area limit.
+    width, height = ovis_size((1000000, 1), 196, 8192)
+    assert height == 32 and width * height // 1024 > 8192
 
 
 def test_roi_and_effective_coordinates() -> None:

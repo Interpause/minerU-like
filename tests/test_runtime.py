@@ -339,3 +339,26 @@ async def test_context_uses_actual_images_or_skips_unknown(
     assert calls == (["/tokenize", "/v1/chat/completions"] if maximum else ["/v1/chat/completions"])
     assert (response.image_geometry[0].effective_size is None) == (maximum is None)
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_context_counts_extreme_strip_above_configured_maximum(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"tokens": [1]})
+
+    runtime = InferenceRuntime(
+        RuntimeSettings(context_size=20000, max_tokens=16000, image_max_tokens=8192)
+    )
+    runtime._client = httpx.AsyncClient(
+        base_url="http://server", transport=httpx.MockTransport(handler)
+    )
+    runtime.state = "ready"
+    image = tmp_path / "strip.png"
+    Image.new("RGB", (1000000, 1)).save(image)
+    with pytest.raises(InferenceError, match="context size"):
+        await runtime.infer([image], "prompt")
+    assert calls == ["/tokenize"]
+    await runtime.close()
