@@ -28,7 +28,7 @@ enabled = true
 
 [runtime]
 mode = "managed"
-binary = "data/b12110/llama-server"
+binary = "data/llama-b12120/llama-server"
 model = "data/models/OvisOCR3.Q8_0.gguf"
 mmproj = "data/models/OvisOCR3.mmproj-bf16.gguf"
 device = "auto"
@@ -36,10 +36,10 @@ kv_cache = "bf16"
 context_size = 32768 # Per slot; total allocation is context_size * parallel_slots.
 max_tokens = 16384
 image_min_tokens = 1024
-image_max_tokens = 4096
+image_max_tokens = 8192
 parallel_slots = 1 # More backend slots do not make the serial parsing pipeline concurrent.
-batch_size = 512 # Logical token batch size, including within a single request.
-ubatch_size = 128 # Physical compute microbatch; smaller values reduce peak compute memory.
+batch_size = 1024 # Logical token batch size, including within a single request.
+ubatch_size = 1024 # Physical compute microbatch; smaller values reduce peak compute memory.
 
 # External mode uses the same task adapter without managing the remote process:
 # mode = "external"
