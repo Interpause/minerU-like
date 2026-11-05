@@ -24,16 +24,7 @@ async def test_delivery_does_not_add_model_calls(tmp_path):
         async def infer(self, images, prompt, *, max_tokens):
             self.calls.append((Path(images[0]), Path(images[0]).read_bytes()))
             if len(self.calls) == 1:
-                return json.dumps(
-                    dict(
-                        blank=False,
-                        complex=False,
-                        math=False,
-                        figures=True,
-                        tables=False,
-                        effort="visual",
-                    )
-                )
+                return json.dumps([{"category": "image", "bbox": [0, 0, 1000, 1000]}])
             return json.dumps(
                 [
                     {

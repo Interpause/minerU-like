@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import ctypes
 import html
 import json
 import re
+import shutil
 import threading
 import time
 from collections import Counter
@@ -18,13 +20,6 @@ from PIL import Image, ImageChops, ImageDraw, ImageOps
 from .result import Block, DocumentResult, Page
 
 PROMPTS = Path(__file__).parent / "prompts"
-ASSESS = (
-    "Inspect this document page, including small text and inline mathematics. "
-    "Return one strictly valid JSON object only, with exactly these keys and value types: "
-    '{"blank":false,"complex":false,"math":false,"tables":false,"figures":false,"effort":"visual"}. '
-    "Set each boolean to true or false according to the page. Set effort to exactly "
-    '"native", "visual", or "verify". Do not use Markdown fences or explanations.'
-)
 CATEGORIES = set(
     "abstract algorithm aside_text chart content display_formula doc_title figure_title footer footer_image footnote formula_number header header_image image inline_formula number paragraph_title reference_content seal table text vertical_text vision_footnote".split()
 )
@@ -64,7 +59,11 @@ def _pdf_snapshot(path, idx, settings, workdir, recovery=False):
             page = pdf[idx]
             try:
                 size = page.get_size()
-                scale = min(settings.render_dpi / 72, settings.max_image_side / max(size))
+                scale = min(
+                    (settings.render_dpi * 1.5 if recovery else settings.render_dpi) / 72,
+                    (settings.max_image_side * 1.5 if recovery else settings.max_image_side)
+                    / max(size),
+                )
                 image = page.render(scale=scale).to_pil().convert("RGB")
                 if recovery:
                     target = workdir / f"recovery-{idx}.png"
@@ -219,15 +218,27 @@ def _formula_crop(pdf_path, index, box, image, workdir, ordinal, settings):
             finally:
                 pdf.close()
     else:
-        width, height = image.size
-        image.crop(
-            (
-                int(x0 * width / 1000),
-                int(y0 * height / 1000),
-                int(x1 * width / 1000),
-                int(y1 * height / 1000),
-            )
-        ).save(target)
+        if isinstance(image, (str, Path)):
+            with Image.open(image) as source:
+                width, height = source.size
+                source.crop(
+                    (
+                        int(x0 * width / 1000),
+                        int(y0 * height / 1000),
+                        int(x1 * width / 1000),
+                        int(y1 * height / 1000),
+                    )
+                ).save(target)
+        else:
+            width, height = image.size
+            image.crop(
+                (
+                    int(x0 * width / 1000),
+                    int(y0 * height / 1000),
+                    int(x1 * width / 1000),
+                    int(y1 * height / 1000),
+                )
+            ).save(target)
     return target
 
 
@@ -267,43 +278,166 @@ def _json(raw: str):
     return json.loads(raw)
 
 
+def _clean_markdown(text):
+    text = text.strip()
+    n = len(text)
+    if n < 8000:
+        return text
+    for period in range(1, min(200, n - 1) + 1):
+        if text[-1] != text[-1 - period]:
+            continue
+        match = 1
+        idx = n - 2
+        while idx >= period and text[idx] == text[idx - period]:
+            match += 1
+            idx -= 1
+        total = match + period
+        if total // period >= 5 and total >= 100:
+            tail = total % period
+            return text[: n - total + period] + (text[n - tail :] if tail else "")
+    return text
+
+
+def _fallback_image_references(text):
+    """Do not publish model-suggested local image paths that were not materialized."""
+
+    def markdown(match):
+        destination = match.group(1) or match.group(2)
+        if re.match(r"^(?:https?:|data:|#)", destination, re.I):
+            return match.group(0)
+        return "[Image reference unavailable; see retained page image]"
+
+    text = re.sub(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))[^)]*\)", markdown, text)
+
+    def html_image(match):
+        tag = match.group(0)
+        src = re.search(r"\bsrc\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
+        if src and not re.match(r"^(?:https?:|data:|#)", src.group(1), re.I):
+            return "[Image reference unavailable; see retained page image]"
+        return tag
+
+    return re.sub(r"<img\b[^>]*>", html_image, text, flags=re.I)
+
+
 def _assessment(raw: str):
     value = _json(raw)
-    if not isinstance(value, dict):
-        raise ValueError("invalid page assessment")
-    for key in ("blank", "complex", "math", "tables", "figures"):
-        if type(value.get(key)) is not bool:
-            value[key] = key != "blank"
-    if value.get("effort") not in ("native", "visual", "verify"):
-        value["effort"] = "visual"
-    return value
-
-
-def _structured(raw: str):
-    value = _json(raw)
     if not isinstance(value, list):
-        raise ValueError("expected structured array")
+        raise ValueError("expected layout array")
     for item in value:
-        if (
-            not isinstance(item, dict)
-            or item.get("category") not in CATEGORIES
-            or not isinstance(item.get("content"), str)
-        ):
-            raise ValueError("invalid structured block")
+        if not isinstance(item, dict) or item.get("category") not in CATEGORIES:
+            raise ValueError("invalid layout block")
         box = item.get("bbox")
         if (
             not isinstance(box, list)
             or len(box) != 4
             or any(type(x) not in (int, float) for x in box)
-            or not (0 <= box[0] < box[2] <= 1000 and 0 <= box[1] < box[3] <= 1000)
         ):
-            raise ValueError("invalid block box")
-        if item["category"] == "table" and not re.search(
-            r"<table\b[\s\S]*</table\s*>", item["content"], re.I
-        ):
-            raise ValueError("invalid table")
-        if item["category"] not in IMAGES and not item["content"].strip():
-            raise ValueError("empty block")
+            raise ValueError("invalid layout box")
+    categories = {item["category"] for item in value}
+    return {
+        "layout": value,
+        "blank": not value,
+        "complex": bool(categories & {"table", "chart", "image"}),
+        "math": bool(categories & {"inline_formula", "display_formula"}),
+        "tables": "table" in categories,
+        "figures": bool(categories & IMAGES),
+        "effort": "visual",
+    }
+
+
+def _structured(raw: str):
+    stopped_at_limit = getattr(raw, "finish_reason", None) == "length"
+    try:
+        value = _json(raw)
+    except (ValueError, TypeError):
+        repaired = _clean_markdown(raw)
+        if repaired != raw.strip():
+            try:
+                value = _json(repaired)
+            except (ValueError, TypeError):
+                value = None
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        item["_incomplete"] = True
+                return _structured(json.dumps(value))
+        # Salvage only complete JSON objects; never synthesize an unfinished record.
+        value = []
+        decoder = json.JSONDecoder()
+        text = raw.strip()
+        if not text.startswith("["):
+            raise
+        pos = 1
+        while pos < len(text):
+            while pos < len(text) and text[pos] in " \t\r\n,":
+                pos += 1
+            try:
+                item, pos = decoder.raw_decode(text, pos)
+            except ValueError:
+                break
+            value.append(item)
+        if not value:
+            raise ValueError("no complete structured records")
+        for item in value:
+            if isinstance(item, dict):
+                item["_incomplete"] = True
+    if not isinstance(value, list):
+        raise ValueError("expected structured array")
+    partial = stopped_at_limit or any(
+        isinstance(item, dict) and item.get("_incomplete") for item in value
+    )
+    accepted, rejected = [], []
+    for index, item in enumerate(value):
+        original_record = copy.deepcopy(item)
+        try:
+            if isinstance(item, dict) and stopped_at_limit:
+                item["_incomplete"] = True
+            if (
+                not isinstance(item, dict)
+                or item.get("category") not in CATEGORIES
+                or not isinstance(item.get("content"), str)
+            ):
+                raise ValueError("invalid structured block")
+            box = item.get("bbox")
+            if (
+                isinstance(box, list)
+                and len(box) == 4
+                and all(type(x) in (int, float) for x in box)
+            ):
+                if 1000 in box:
+                    item["_original_bbox"] = box[:]
+                    item["_bbox_deviation"] = "coordinate 1000 accepted at boundary"
+            if (
+                not isinstance(box, list)
+                or len(box) != 4
+                or any(type(x) not in (int, float) for x in box)
+                or not (0 <= box[0] < box[2] <= 1000 and 0 <= box[1] < box[3] <= 1000)
+            ):
+                raise ValueError("invalid block box")
+            if item["category"] == "table" and not re.search(
+                r"<table\b[\s\S]*</table\s*>", item["content"], re.I
+            ):
+                if not (
+                    item.get("_incomplete")
+                    and re.search(r"<table\b", item["content"], re.I)
+                    and re.search(r"<t[dh]\b[^>]*>[\s\S]*?</t[dh]\s*>", item["content"], re.I)
+                ):
+                    raise ValueError("invalid table")
+                item["_partial_table"] = True
+            if item["category"] not in IMAGES and not item["content"].strip():
+                raise ValueError("empty block")
+            accepted.append(item)
+        except (ValueError, TypeError, KeyError) as exc:
+            if not partial:
+                raise
+            rejected.append({"index": index, "reason": str(exc), "record": original_record})
+    if rejected:
+        if not accepted:
+            raise ValueError("no valid complete structured records")
+        for item in accepted:
+            item["_incomplete"] = True
+        accepted[0]["_rejected_records"] = rejected
+    value = accepted
     return value
 
 
@@ -367,6 +501,7 @@ class Pipeline:
     async def _infer_valid(
         self, images, prompt, validator, diagnostics, page_idx, stage, recovery=None
     ):
+        errors = []
         for attempt in range(3):
             selected_images = (
                 [await asyncio.to_thread(recovery)]
@@ -380,15 +515,24 @@ class Pipeline:
             try:
                 raw = await self.runtime.infer(
                     selected_images,
-                    prompt
-                    if attempt < 2
-                    else prompt
-                    + "\nReturn complete valid output; do not omit any visible content.",
-                    max_tokens=min(
-                        self.settings.runtime.max_tokens, 16384 if stage != "assessment" else 1024
-                    ),
+                    prompt,
+                    max_tokens=min(self.settings.runtime.max_tokens, 16384),
                 )
-                result = validator(raw)
+                candidate = (
+                    _clean_markdown(raw)
+                    if stage in {"advanced_markdown", "markdown_fallback"}
+                    else raw
+                )
+                result = validator(candidate)
+                if getattr(raw, "finish_reason", None) == "length":
+                    diagnostics.append(
+                        {
+                            "page_idx": page_idx,
+                            "stage": stage,
+                            "status": "incomplete",
+                            "warning": "Model stopped at token limit; output may be incomplete",
+                        }
+                    )
                 diagnostics.append(
                     {
                         "page_idx": page_idx,
@@ -397,11 +541,19 @@ class Pipeline:
                         "call_number": call_number,
                         "duration_seconds": time.monotonic() - started,
                         "attempt": attempt + 1,
-                        "raw": raw,
+                        "raw": getattr(raw, "raw_text", raw),
+                        "finish_reason": getattr(raw, "finish_reason", None),
+                        "usage": getattr(raw, "usage", None),
+                        **(
+                            {"cleaned": candidate, "cleanup_applied": candidate != raw}
+                            if stage in {"advanced_markdown", "markdown_fallback"}
+                            else {}
+                        ),
                     }
                 )
                 return result
             except (ValueError, TypeError, KeyError) as exc:
+                errors.append(str(exc))
                 diagnostics.append(
                     {
                         "page_idx": page_idx,
@@ -410,7 +562,9 @@ class Pipeline:
                         "call_number": call_number,
                         "duration_seconds": time.monotonic() - started,
                         "attempt": attempt + 1,
-                        "raw": raw,
+                        "raw": getattr(raw, "raw_text", raw),
+                        "finish_reason": getattr(raw, "finish_reason", None),
+                        "usage": getattr(raw, "usage", None),
                         "error": str(exc),
                     }
                 )
@@ -439,6 +593,7 @@ class Pipeline:
                         "error": str(exc),
                     }
                 )
+                raise
             except Exception as exc:
                 diagnostics.append(
                     {
@@ -452,7 +607,9 @@ class Pipeline:
                     }
                 )
                 raise
-        raise ValueError(f"Page {page_idx + 1}: {stage} failed validation after retries")
+        raise ValueError(
+            f"Page {page_idx + 1}: {stage} failed validation after retries: {'; '.join(errors)}"
+        )
 
     async def parse(
         self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
@@ -477,64 +634,67 @@ class Pipeline:
         diagnostics, assets, pages = _Diagnostics(workdir / "diagnostics.jsonl"), {}, []
         if suffix == ".pdf":
             count = await asyncio.to_thread(_pdf_count, input_path)
-            if count > self.settings.max_pages:
-                raise ValueError("Document exceeds configured maximum page count")
-            for idx in range(count):
-                image, native, uncertain, compare, small_regions = await asyncio.to_thread(
-                    _pdf_snapshot, input_path, idx, self.settings, workdir
-                )
-
-                def recovery():
-                    return _pdf_snapshot(input_path, idx, self.settings, workdir, True)
-
-                pages.append(
-                    await self._page(
-                        idx,
-                        image,
-                        workdir,
-                        diagnostics,
-                        assets,
-                        native,
-                        uncertain,
-                        ocr_mode,
-                        recovery,
-                        compare,
-                        input_path,
-                        small_regions=small_regions,
-                    )
-                )
         else:
             with Image.open(input_path) as source:
                 count = getattr(source, "n_frames", 1)
-            if count > self.settings.max_pages:
-                raise ValueError("Document exceeds configured maximum page count")
-            for idx in range(count):
-                original = await asyncio.to_thread(_image_frame, input_path, idx)
-                original.save(workdir / f"source-{idx}.png")
-                image = original.copy()
-                image.thumbnail((self.settings.max_image_side, self.settings.max_image_side))
+        if count > self.settings.max_pages:
+            raise ValueError("Document exceeds configured maximum page count")
 
-                def recovery():
-                    target = workdir / f"recovery-{idx}.png"
-                    original.save(target)
-                    return target
+        prepare_slots = asyncio.Semaphore(2)
 
-                pages.append(
-                    await self._page(
-                        idx,
-                        image,
-                        workdir,
-                        diagnostics,
-                        assets,
-                        "",
-                        True,
-                        ocr_mode,
-                        recovery,
-                        False,
-                        None,
-                        original,
+        async def parse_page(idx):
+            async with prepare_slots:
+                if suffix == ".pdf":
+                    image, native, uncertain, compare, small_regions = await asyncio.to_thread(
+                        _pdf_snapshot, input_path, idx, self.settings, workdir
                     )
+                    recovery = partial(_pdf_snapshot, input_path, idx, self.settings, workdir, True)
+                    source_path = None
+                else:
+                    original = await asyncio.to_thread(_image_frame, input_path, idx)
+                    source_path = workdir / f"source-{idx}.png"
+                    await asyncio.to_thread(original.save, source_path)
+                    image = original.copy()
+                    original.close()
+                    image.thumbnail((self.settings.max_image_side, self.settings.max_image_side))
+                    native, uncertain, compare, small_regions = "", True, False, ()
+
+                    def recovery():
+                        target = workdir / f"recovery-{idx}.png"
+                        shutil.copyfile(source_path, target)
+                        return target
+
+                image_size = image.size
+                blank_image = image.convert("L").getextrema()[0] >= 250
+                path, preview, preview_path = await asyncio.to_thread(
+                    _prepare_page_images, image, workdir, idx, self.settings.preview_side
                 )
+                image.close()
+                preview.close()
+            return await self._page(
+                idx,
+                (path, preview_path, image_size, blank_image),
+                workdir,
+                diagnostics,
+                assets,
+                native,
+                uncertain,
+                ocr_mode,
+                recovery,
+                compare,
+                input_path if suffix == ".pdf" else None,
+                source_path,
+                small_regions=small_regions,
+            )
+
+        tasks = [asyncio.create_task(parse_page(idx)) for idx in range(count)]
+        try:
+            pages = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         if not pages:
             raise ValueError("Document has no pages")
         result = DocumentResult(pages=pages, assets=assets, diagnostics=diagnostics)
@@ -595,40 +755,120 @@ class Pipeline:
                         if suffix == ".pdf"
                         else None,
                     )
+        for page in pages:
+            for block in page.blocks:
+                if block.image_source and block.image_source not in assets:
+                    assets[block.image_source] = workdir / block.image_source
         if self.settings.cross_page_tables and len(pages) > 1:
-            if tier == "advanced":
-                from .tables import reconstruct_tables, render_table_html
+            from .tables import reconstruct_tables, render_table_html
 
-                pipeline = self
+            pipeline = self
 
-                class DiagnosticRuntime:
-                    async def infer(self, images, prompt, *, max_tokens):
-                        started = time.monotonic()
-                        pipeline._call_count += 1
-                        number = pipeline._call_count
-                        try:
-                            return await pipeline.runtime.infer(
-                                images, prompt, max_tokens=max_tokens
-                            )
-                        finally:
-                            diagnostics.append(
-                                {
-                                    "stage": "cross_page_table_advanced_call",
-                                    "purpose": "cross_page_table_advanced",
-                                    "call_number": number,
-                                    "duration_seconds": time.monotonic() - started,
-                                }
-                            )
+            class DiagnosticRuntime:
+                async def infer(self, images, prompt, *, max_tokens):
+                    started = time.monotonic()
+                    pipeline._call_count += 1
+                    number = pipeline._call_count
+                    try:
+                        return await pipeline.runtime.infer(images, prompt, max_tokens=max_tokens)
+                    finally:
+                        diagnostics.append(
+                            {
+                                "stage": "cross_page_table_advanced_call",
+                                "purpose": "cross_page_table_advanced",
+                                "call_number": number,
+                                "duration_seconds": time.monotonic() - started,
+                            }
+                        )
 
-                await reconstruct_tables(
-                    result,
-                    workdir,
-                    DiagnosticRuntime(),
-                    render_table_html,
-                    max_tokens=self.settings.runtime.max_tokens,
+            async def recover_page(page_index):
+                page = copy.deepcopy(result.pages[page_index])
+                layouts = page.metadata.get("assessment", {}).get("layout", [])
+                candidates = [
+                    item["bbox"]
+                    for item in layouts
+                    if item.get("category") == "table"
+                    and isinstance(item.get("bbox"), list)
+                    and len(item["bbox"]) == 4
+                    and 0 <= item["bbox"][0] < item["bbox"][2] <= 1000
+                    and 0 <= item["bbox"][1] < item["bbox"][3] <= 1000
+                ]
+                crop_box = candidates[0] if len(candidates) == 1 else None
+                if crop_box:
+                    source_path = workdir / f"source-{page_index}.png"
+                    imagepath = await asyncio.to_thread(
+                        _formula_crop,
+                        input_path if suffix == ".pdf" else None,
+                        page_index,
+                        crop_box,
+                        source_path,
+                        workdir,
+                        30000,
+                        self.settings,
+                    )
+                elif suffix == ".pdf":
+                    imagepath = await asyncio.to_thread(
+                        _pdf_snapshot, input_path, page_index, self.settings, workdir, True
+                    )
+                else:
+                    imagepath = workdir / f"source-{page_index}.png"
+                try:
+                    items = await self._infer_valid(
+                        [imagepath],
+                        (PROMPTS / "document_structured.txt").read_text(),
+                        _structured,
+                        diagnostics,
+                        page_index,
+                        "table_page_recovery",
+                    )
+                except ValueError:
+                    return None
+                tables = [item for item in items if item["category"] == "table"]
+                if len(tables) != 1:
+                    return None
+                item = tables[0]
+                box = item["bbox"]
+                if crop_box:
+                    x0, y0, x1, y1 = (
+                        max(0, crop_box[0] - 10),
+                        max(0, crop_box[1] - 10),
+                        min(1000, crop_box[2] + 10),
+                        min(1000, crop_box[3] + 10),
+                    )
+                    box = [
+                        x0 + box[0] * (x1 - x0) / 1000,
+                        y0 + box[1] * (y1 - y0) / 1000,
+                        x0 + box[2] * (x1 - x0) / 1000,
+                        y0 + box[3] * (y1 - y0) / 1000,
+                    ]
+                block = Block(
+                    "table",
+                    item["content"],
+                    bbox=tuple(float(x) / 1000 for x in box),
+                    metadata={"source": "visual", "recovered_for_table_reconstruction": True},
                 )
-            else:
-                await self._merge_tables(result, workdir)
+                existing = [(i, b) for i, b in enumerate(page.blocks) if b.type == "table"]
+                if existing:
+                    if len(existing) != 1 or re.search(
+                        r"<t[dh]\b[^>]*>[\s\S]*?</t[dh]\s*>", existing[0][1].content, re.I
+                    ):
+                        return None
+                    index, old = existing[0]
+                    block.metadata["original_table_fragment"] = old.content
+                    block.metadata["original_table_metadata"] = old.metadata
+                    page.blocks[index] = block
+                else:
+                    page.blocks.append(block)
+                return page
+
+            await reconstruct_tables(
+                result,
+                workdir,
+                DiagnosticRuntime(),
+                render_table_html,
+                max_tokens=self.settings.runtime.max_tokens,
+                recover_page=recover_page,
+            )
         return result
 
     async def _merge_tables(self, result, workdir):
@@ -719,33 +959,27 @@ class Pipeline:
         original_image=None,
         small_regions=(),
     ):
-        path, preview, preview_path = await asyncio.to_thread(
-            _prepare_page_images, image, workdir, idx, self.settings.preview_side
-        )
-        assessment = await self._infer_valid(
-            [preview_path], ASSESS, _assessment, diagnostics, idx, "assessment"
-        )
-        # Native text is only selected in the simplest digital case. Uncertain, raster-backed,
-        # complex and mathematical pages use the full-resolution visual path.
-        usable = (
-            bool(native.strip())
-            and "\ufffd" not in native
-            and sum(c.isprintable() or c.isspace() for c in native) / len(native) > 0.98
-        )
-        trust = (
-            usable
-            and not has_raster
-            and ocr_mode.lower() not in {"forceocr", "force_ocr", "force-ocr", "ocr"}
-            and assessment["effort"] == "native"
-            and not any(assessment[k] for k in ("complex", "math", "tables", "figures"))
-        )
-        if trust:
-            return Page(
-                page_idx=idx,
-                blocks=[Block(type="text", content=native.strip(), metadata={"source": "native"})],
-                metadata={"route": "native", "assessment": assessment},
+        path, preview_path, image_size, blank_image = image
+        try:
+            assessment = await self._infer_valid(
+                [preview_path],
+                (PROMPTS / "document_layout.txt").read_text(),
+                _assessment,
+                diagnostics,
+                idx,
+                "assessment",
             )
-        if assessment["blank"] and not native.strip() and image.convert("L").getextrema()[0] >= 250:
+        except ValueError:
+            assessment = {
+                "blank": False,
+                "complex": True,
+                "math": True,
+                "tables": True,
+                "figures": True,
+                "effort": "visual",
+            }
+            diagnostics.append({"page_idx": idx, "stage": "assessment", "status": "unresolved"})
+        if assessment["blank"] and not native.strip() and blank_image:
             return Page(
                 page_idx=idx, blocks=[], metadata={"route": "blank", "assessment": assessment}
             )
@@ -754,37 +988,80 @@ class Pipeline:
             items = _structured(raw)
             if not items:
                 raise ValueError("no blocks for a nonblank page")
-            total, outside = _ink_outside(preview, items)
-            if total > 80 and outside / total > 0.60:
+            with Image.open(preview_path) as preview:
+                total, outside = _ink_outside(preview, items)
+            if (
+                not any(item.get("_incomplete") for item in items)
+                and total > 80
+                and outside / total > 0.60
+            ):
                 raise ValueError("visual output leaves substantial visible ink outside its regions")
-            if compare_native and ocr_mode.lower() not in {
-                "forceocr",
-                "force_ocr",
-                "force-ocr",
-                "ocr",
-            }:
-                source_words = re.findall(r"[^\W\d_]{4,}", native.casefold())
-                output_words = set(
-                    re.findall(
-                        r"[^\W\d_]{4,}", " ".join(item["content"] for item in items).casefold()
-                    )
-                )
-                if (
-                    len(source_words) >= 8
-                    and sum(word in output_words for word in source_words) / len(source_words) < 0.6
-                ):
-                    raise ValueError("visual output omits much of the visible native text")
             return items
 
-        items = await self._infer_valid(
-            [path],
-            (PROMPTS / "document_structured.txt").read_text(),
-            nonempty,
-            diagnostics,
-            idx,
-            "structured",
-            recovery,
-        )
+        try:
+            items = await self._infer_valid(
+                [path],
+                (PROMPTS / "document_structured.txt").read_text(),
+                nonempty,
+                diagnostics,
+                idx,
+                "structured",
+                recovery,
+            )
+        except ValueError:
+
+            def markdown(raw):
+                if not raw.strip():
+                    raise ValueError("Empty Markdown")
+                return raw.strip()
+
+            try:
+                text = await self._infer_valid(
+                    [path],
+                    (PROMPTS / "document_markdown.txt").read_text(),
+                    markdown,
+                    diagnostics,
+                    idx,
+                    "markdown_fallback",
+                    recovery,
+                )
+            except ValueError:
+                text = "No reliable transcription available; page image retained."
+
+            text = _fallback_image_references(text)
+            if any(
+                d.get("page_idx") == idx
+                and d.get("stage") == "markdown_fallback"
+                and d.get("cleanup_applied")
+                for d in diagnostics
+            ):
+                text = (
+                    "[Repeated-tail cleanup applied; original response retained in diagnostics]\n\n"
+                    + text
+                )
+            name = f"images/page_{idx}_fallback.png"
+            target = workdir / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.copyfile, path, target)
+            assets[name] = target
+            diagnostics.append(
+                {
+                    "page_idx": idx,
+                    "stage": "structured",
+                    "status": "incomplete",
+                    "warning": "Structured extraction failed; Markdown and page image retained",
+                }
+            )
+            return Page(
+                idx,
+                [
+                    Block("image", "", image_source=name),
+                    Block(
+                        "text", "[Uncertain extraction: structured output unavailable]\n\n" + text
+                    ),
+                ],
+                metadata={"route": "markdown_fallback", "assessment": assessment},
+            )
         if pdf_path and small_regions:
             from .verification import verify_small_text_regions
 
@@ -794,7 +1071,7 @@ class Pipeline:
                 input_items=items,
                 regions=small_regions,
                 pdf_path=pdf_path,
-                image=image,
+                image=None,
                 workdir=workdir,
                 diagnostics=diagnostics,
             )
@@ -806,17 +1083,72 @@ class Pipeline:
         ):
             native_regions = await asyncio.to_thread(_native_regions, pdf_path, idx, items)
         blocks = []
+        if any(item.get("_incomplete") for item in items):
+            name = f"images/page_{idx}_incomplete.png"
+            target = workdir / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.copyfile, path, target)
+            assets[name] = target
+            blocks.extend(
+                [
+                    Block(
+                        "text",
+                        "[Incomplete extraction: only complete records were recovered; see page image]",
+                    ),
+                    Block("image", "", image_source=name),
+                ]
+            )
         for n, item in enumerate(items):
             category, content, box = item["category"], item["content"], item["bbox"]
+            if item.get("_uncertain_alternative"):
+                blocks.append(
+                    Block(
+                        "text",
+                        "[Uncertain alternative transcription] " + item["_uncertain_alternative"],
+                    )
+                )
+            if item.get("_rejected_records"):
+                diagnostics.append(
+                    {
+                        "page_idx": idx,
+                        "stage": "structured",
+                        "status": "incomplete",
+                        "rejected_records": item["_rejected_records"],
+                    }
+                )
+            if item.get("_incomplete"):
+                diagnostics.append(
+                    {
+                        "page_idx": idx,
+                        "stage": "structured",
+                        "status": "incomplete",
+                        "warning": "Only complete records recovered",
+                    }
+                )
+            if item.get("_uncertain"):
+                content = "[Uncertain text] " + content
+                name = f"images/page_{idx}_small_text_{n}.png"
+                target = workdir / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(Path(item["_uncertain_crop"]).read_bytes())
+                assets[name] = target
+                blocks.append(
+                    Block(
+                        "image",
+                        "",
+                        image_source=name,
+                        metadata={"warning": "Small-text verification disagrees"},
+                    )
+                )
             if category in {"display_formula", "inline_formula"} and (
-                self.tier == "advanced" or _risky_formula(content, box, image.size)
+                self.tier == "advanced" or _risky_formula(content, box, image_size)
             ):
                 crop_path = await asyncio.to_thread(
                     _formula_crop,
                     pdf_path,
                     idx,
                     box,
-                    original_image or image,
+                    original_image or path,
                     workdir,
                     n,
                     self.settings,
@@ -827,14 +1159,37 @@ class Pipeline:
                         raise ValueError("invalid formula recognition")
                     return raw.strip()
 
-                content = await self._infer_valid(
-                    [crop_path],
-                    (PROMPTS / "formula_recognition.txt").read_text(),
-                    formula,
-                    diagnostics,
-                    idx,
-                    "formula",
-                )
+                try:
+                    content = await self._infer_valid(
+                        [crop_path],
+                        (PROMPTS / "formula_recognition.txt").read_text(),
+                        formula,
+                        diagnostics,
+                        idx,
+                        "formula",
+                    )
+                except ValueError:
+                    item["_uncertain"] = True
+                    item["_uncertain_crop"] = str(crop_path)
+                    name = f"images/page_{idx}_formula_{n}.png"
+                    target = workdir / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(crop_path.read_bytes())
+                    assets[name] = target
+                    blocks.append(
+                        Block("text", "[Uncertain formula: independent recognition unavailable]")
+                    )
+                    blocks.append(
+                        Block(
+                            "image",
+                            "",
+                            image_source=name,
+                            metadata={"warning": "Formula recognition failed"},
+                        )
+                    )
+                    diagnostics.append(
+                        {"page_idx": idx, "stage": "formula", "status": "unresolved"}
+                    )
             bbox = tuple(float(x) / 1000 for x in box)
             source = None
             kind = {
@@ -851,7 +1206,7 @@ class Pipeline:
                     pdf_path,
                     idx,
                     box,
-                    original_image or image,
+                    original_image or path,
                     workdir,
                     n,
                     self.settings,
@@ -862,18 +1217,47 @@ class Pipeline:
             provenance = "visual"
             candidate = native_regions.get(n, "")
 
-            def norm(text):
-                return re.findall(r"\w+", text.casefold())
-
-            native_words, visual_words = norm(candidate), norm(content)
+            native_numbers = set(re.findall(r"[+−-]?\d+(?:[.,]\d+)*", candidate))
+            visual_numbers = set(re.findall(r"[+−-]?\d+(?:[.,]\d+)*", content))
             if (
-                native_words
-                and visual_words
-                and native_words == visual_words
-                and "\ufffd" not in candidate
-                and not re.search(r"[∑∫√∂∇≈≠≤≥±×÷∞∈∏]|[\u0370-\u03ff]", candidate)
+                candidate
+                and native_numbers - visual_numbers
+                and category in {"text", "abstract", "content", "reference_content"}
             ):
-                content, provenance = candidate, "native_verified_visual"
+                crop_path = await asyncio.to_thread(
+                    _formula_crop,
+                    pdf_path,
+                    idx,
+                    box,
+                    original_image or path,
+                    workdir,
+                    20000 + n,
+                    self.settings,
+                )
+                name = f"images/page_{idx}_native_disagreement_{n}.png"
+                target = workdir / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(shutil.copyfile, crop_path, target)
+                assets[name] = target
+                blocks.extend(
+                    [
+                        Block(
+                            "text",
+                            "[Uncertain text: native and visual evidence disagree; see region image]",
+                        ),
+                        Block("image", "", image_source=name),
+                    ]
+                )
+                diagnostics.append(
+                    {
+                        "page_idx": idx,
+                        "stage": "native_region_comparison",
+                        "status": "unresolved",
+                        "region": n,
+                        "native": candidate,
+                        "visual": content,
+                    }
+                )
             blocks.append(
                 Block(
                     type=kind,
@@ -883,6 +1267,14 @@ class Pipeline:
                     metadata={
                         "source": provenance,
                         "category": category,
+                        **(
+                            {
+                                "original_bbox": item["_original_bbox"],
+                                "bbox_deviation": item.get("_bbox_deviation"),
+                            }
+                            if "_original_bbox" in item
+                            else {}
+                        ),
                         **(
                             {
                                 "asset_type": _figure_kind(item),
@@ -898,7 +1290,7 @@ class Pipeline:
             )
         attached = set()
         for n, block in enumerate(blocks):
-            if block.metadata["category"] != "figure_title":
+            if block.metadata.get("category") != "figure_title":
                 continue
             adjacent = [
                 blocks[j] for j in (n - 1, n + 1) if 0 <= j < len(blocks) and blocks[j].image_source
@@ -907,16 +1299,31 @@ class Pipeline:
                 adjacent[0].captions.append(block.content)
                 attached.add(n)
         blocks = [block for n, block in enumerate(blocks) if n not in attached]
-        if self.settings.captioning and any(b.image_source for b in blocks):
-            captions = await self._infer_valid(
-                [path],
-                (PROMPTS / "figure_captioning.txt").read_text(),
-                _structured,
-                diagnostics,
-                idx,
-                "captions",
-            )
-            for block in (b for b in blocks if b.image_source):
+        if self.settings.captioning and any(
+            b.image_source and b.metadata.get("category") in IMAGES for b in blocks
+        ):
+            try:
+                captions = await self._infer_valid(
+                    [path],
+                    (PROMPTS / "figure_captioning.txt").read_text(),
+                    _structured,
+                    diagnostics,
+                    idx,
+                    "captions",
+                )
+            except ValueError as exc:
+                diagnostics.append(
+                    {
+                        "page_idx": idx,
+                        "stage": "captions",
+                        "status": "unresolved",
+                        "warning": str(exc),
+                    }
+                )
+                captions = []
+            for block in (
+                b for b in blocks if b.image_source and b.metadata.get("category") in IMAGES
+            ):
                 generated = False
                 candidates = []
                 for item in captions:
