@@ -45,7 +45,12 @@ class Pipeline:
 
 @pytest.fixture
 def context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    for name in ("document_markdown.txt", "region_ocr.txt", "formula_recognition.txt"):
+    for name in (
+        "document_markdown.txt",
+        "region_ocr.txt",
+        "formula_recognition.txt",
+        "document_structured.txt",
+    ):
         (tmp_path / name).write_text(
             "formula prompt" if name.startswith("formula") else "{target_region}"
         )
@@ -131,9 +136,93 @@ async def test_unreadable_formula_placeholder(context: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_competing_readings_stay_in_metadata(context: Path) -> None:
-    pipeline = Pipeline(r"$x-y$", r"$x*z$")
+    pipeline = Pipeline(r"$x-y$", r"$$x*z$$")
     page = Page(0, [Block("equation", r"$x+y$", bbox=(0, 0, 1, 1))])
     await verify_page(pipeline, page, context, [])
     assert page.blocks[0].content == "$x+y$"
-    assert page.blocks[0].metadata["verification"]["targeted"] == "$x*z$"
+    assert page.blocks[0].metadata["verification"]["targeted"] == "$$x*z$$"
     assert len(page.blocks) == 1
+
+
+@pytest.mark.asyncio
+async def test_text_recovery_respects_neighboring_block_boundaries(context: Path) -> None:
+    pipeline = Pipeline("Before the value is 53 after", "the value is 53")
+    page = Page(
+        0,
+        [
+            Block("text", "Before"),
+            Block("text", "the value is 52", bbox=(0, 0, 1, 1)),
+            Block("text", "after"),
+        ],
+    )
+    await verify_page(pipeline, page, context, [])
+    assert [block.content for block in page.blocks] == ["Before", "the value is 53", "after"]
+    assert pipeline.prompts[-1] == "[0, 0, 999, 999]"
+
+
+@pytest.mark.asyncio
+async def test_inline_math_uses_structured_containing_region(context: Path) -> None:
+    pipeline = Pipeline(
+        "value $x-y$ now",
+        '[{"category":"text","content":"value"},{"category":"inline_formula","content":"x-y"},{"category":"text","content":"now"}]',
+    )
+    page = Page(0, [Block("text", "value $x+y$ now", bbox=(0, 0, 1, 1))])
+    await verify_page(pipeline, page, context, [])
+    assert page.blocks[0].content == "value $x-y$ now"
+    assert pipeline.stages == ["advanced_markdown", "advanced_region"]
+
+
+def test_valid_ellipses_and_sequential_environments() -> None:
+    assert not formula_is_suspicious(r"x_1,\ldots,x_n")
+    assert not formula_is_suspicious(r"\begin{a}x\end{a}\begin{b}y\end{b}")
+    assert formula_is_suspicious(r"\begin{a}x\end{b}")
+
+
+@pytest.mark.asyncio
+async def test_swapped_table_cells_and_reversed_text_remain_unresolved(context: Path) -> None:
+    page = Page(
+        0,
+        [
+            Block("text", "A causes B", metadata={"source": "native"}),
+            Block(
+                "table",
+                "<table><tr><td>red blue</td><td>green</td></tr></table>",
+                metadata={"source": "native"},
+            ),
+        ],
+    )
+    diagnostics: list[Diagnostic] = []
+    await verify_page(Pipeline("B causes A\n| red | blue green |"), page, context, diagnostics)
+    assert page.blocks[0].content == "A causes B"
+    assert "red blue" in page.blocks[1].content
+    assert diagnostics[-1]["regions"] == [0, 1]
+    assert len(page.blocks) == 2
+
+
+@pytest.mark.asyncio
+async def test_targeted_formula_must_be_one_framed_expression(context: Path) -> None:
+    for response in ("nonsense", "$$x$$ $$y$$", "The answer is x"):
+        page = Page(0, [Block("equation", "$x+$", bbox=(0, 0, 1, 1))])
+        await verify_suspicious_regions(Pipeline(region=response), page, context, [])
+        assert page.blocks[0].content.startswith("[Unclear formula;")
+
+
+@pytest.mark.asyncio
+async def test_cancellation_propagates(context: Path) -> None:
+    import asyncio
+
+    class Cancelled(Pipeline):
+        async def _infer_valid(
+            self,
+            images: list[Path],
+            prompt: str,
+            validator: Callable[[str], T],
+            diagnostics: list[Diagnostic],
+            page_idx: int,
+            stage: str,
+            recovery: Callable[[], Path] | None = None,
+        ) -> T:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await verify_page(Cancelled(), Page(0, [Block("text", "text")]), context, [])

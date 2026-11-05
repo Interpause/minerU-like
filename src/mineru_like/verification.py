@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
-from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from html import unescape
 from pathlib import Path
@@ -14,7 +14,7 @@ from typing import Protocol, TypeVar, cast
 from PIL import Image
 
 from .config import Settings
-from .contracts import Diagnostic, Payload
+from .contracts import Diagnostic
 from .result import Block, Page
 
 T = TypeVar("T")
@@ -40,17 +40,14 @@ class VerificationError(ValueError):
     """A separate verification pass could not be interpreted."""
 
 
-def _tokens(text: str) -> Counter[str]:
-    text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
-    text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text)
-    return Counter(re.findall(r"[+−-]?\d+(?:[.,]\d+)*|[^\W\d_]+", text, re.UNICODE))
-
-
 def _sequence(text: str) -> list[str]:
+    text = re.sub(r"(?im)^\s*\|?[\s:|-]+\|[\s:|-]*$", "", text)
+    text = re.sub(r"(?m)^\s*\|", "", text)
+    text = re.sub(r"(?i)</t[dh]>", " | ", text)
     text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
     text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text)
     text = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text).replace("−", "-")
-    return re.findall(r"[+-]?\d+(?:[.,]\d+)*|[^\W\d_]+|[+\-*/=<>±×÷≤≥≠∑∫]", text)
+    return re.findall(r"[+-]?\d+(?:[.,]\d+)*|[^\W\d_]+|[+\-*/=<>±×÷≤≥≠∑∫|]", text)
 
 
 def _agree(a: str, b: str) -> bool:
@@ -80,7 +77,7 @@ def canonical_math(value: str) -> str:
 
 def formula_is_suspicious(raw: str) -> bool:
     value = _unwrap_math(raw)
-    if not value or any(s in value for s in ("�", "???", "...", "…", "```")):
+    if not value or any(s in value for s in ("�", "???", "```")):
         return True
     if re.search(r"\\(?:frac|dfrac|tfrac)\s*(?:$|\{[^{}]*\}\s*$)", value):
         return True
@@ -95,9 +92,13 @@ def formula_is_suspicious(raw: str) -> bool:
             stack.pop()
     if stack or re.search(r"[_^=+\-*/]\s*$", value):
         return True
-    begins = re.findall(r"\\begin\{([^{}]+)\}", value)
-    ends = re.findall(r"\\end\{([^{}]+)\}", value)
-    return begins != list(reversed(ends))
+    environments: list[str] = []
+    for match in re.finditer(r"\\(begin|end)\{([^{}]+)\}", value):
+        if match.group(1) == "begin":
+            environments.append(match.group(2))
+        elif not environments or environments.pop() != match.group(2):
+            return True
+    return bool(environments)
 
 
 _MATH = re.compile(
@@ -135,9 +136,35 @@ def _region_text(raw: str) -> str:
 def _formula_text(raw: str) -> str:
     if not isinstance(raw, str) or formula_is_suspicious(raw):
         raise ValueError("Invalid or incomplete formula")
-    if len(list(_MATH.finditer(raw))) > 1 or "```" in raw:
-        raise ValueError("Multiple formulas in region")
-    return raw.strip()
+    value = raw.strip()
+    match = _MATH.fullmatch(value)
+    if not match or not (value.startswith("$$") or value.startswith(r"\[")):
+        raise ValueError("Expected one standalone formula")
+    body = _unwrap_math(value)
+    if _MATH.search(body) or re.fullmatch(r"[A-Za-z]{3,}(?:\s+[A-Za-z]+)*[.!]?", body):
+        raise ValueError("Not one mathematical expression")
+    return value
+
+
+def _structured_region(raw: str) -> str:
+    value = json.loads(raw)
+    if not isinstance(value, list) or not value:
+        raise ValueError("Invalid structured region")
+    contents = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("_incomplete"):
+            raise ValueError("Incomplete structured region")
+        content, category = item.get("content"), item.get("category")
+        if not isinstance(content, str) or not isinstance(category, str):
+            raise ValueError("Invalid structured region item")
+        if category in {"image", "chart", "header_image", "footer_image"}:
+            raise ValueError("Unexpected image in structured region")
+        if category in {"inline_formula", "display_formula"}:
+            if formula_is_suspicious(content):
+                raise ValueError("Incomplete inline formula")
+            content = "$" + _unwrap_math(content) + "$"
+        contents.append(content)
+    return " ".join(contents)
 
 
 def _location(page: Page, block: Block) -> str:
@@ -198,9 +225,10 @@ async def _recover(
     index: int,
     imagepath: Path,
     diagnostics: list[Diagnostic],
-    crop_pdf: Callable[..., Path] | None,
+    crop_pdf: Callable[..., Path | None] | None,
     stage: str,
     expected: str | None = None,
+    inline_math: bool = False,
 ) -> None:
     from .pipeline import PROMPTS
 
@@ -217,62 +245,72 @@ async def _recover(
             }
         )
         return
+    candidate: str | None = None
+    previous: bytes | None = None
     with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
-        if crop_pdf:
-            crop = crop_pdf(box=[round(v * 1000) for v in block.bbox], ordinal=index)
-            if crop is None:
-                diagnostics.append(
-                    {
-                        "page_idx": page.page_idx,
-                        "stage": stage,
-                        "status": "unresolved",
-                        "region": index,
-                        "reason": "crop unavailable",
-                    }
-                )
-                return
-        else:
-            with Image.open(imagepath) as image:
-                width, height = image.size
-                bounds = tuple(
-                    max(
-                        0,
-                        min(
-                            width if i % 2 == 0 else height,
-                            int(v * (width if i % 2 == 0 else height)),
-                        ),
+        for view in range(2 if crop_pdf else 1):
+            if crop_pdf:
+                crop = crop_pdf(box=[round(v * 1000) for v in block.bbox], ordinal=index, view=view)
+                if crop is None:
+                    break
+            else:
+                with Image.open(imagepath) as image:
+                    width, height = image.size
+                    bounds = tuple(
+                        max(
+                            0,
+                            min(
+                                width if i % 2 == 0 else height,
+                                int(v * (width if i % 2 == 0 else height)),
+                            ),
+                        )
+                        for i, v in enumerate(block.bbox)
                     )
-                    for i, v in enumerate(block.bbox)
-                )
-                if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
-                    diagnostics.append(
-                        {
-                            "page_idx": page.page_idx,
-                            "stage": stage,
-                            "status": "unresolved",
-                            "region": index,
-                            "reason": "invalid bounds",
-                        }
-                    )
-                    return
-                crop = Path(directory) / "region.png"
-                image.crop(cast(tuple[int, int, int, int], bounds)).save(crop)
-        prompt = (
-            PROMPTS / ("formula_recognition.txt" if is_formula else "region_ocr.txt")
-        ).read_text()
-        prompt = prompt.replace("{target_region}", "[0, 0, 999, 999]")
-        try:
-            candidate = await pipeline._infer_valid(
-                [crop],
-                prompt,
-                _formula_text if is_formula else _region_text,
-                diagnostics,
-                page.page_idx,
-                stage,
-                None,
+                    if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                        break
+                    crop = Path(directory) / "region.png"
+                    image.crop(cast(tuple[int, int, int, int], bounds)).save(crop)
+            data = crop.read_bytes()
+            if previous == data:
+                break
+            previous = data
+            prompt_name = (
+                "formula_recognition.txt"
+                if is_formula
+                else "document_structured.txt"
+                if inline_math
+                else "region_ocr.txt"
             )
-        except ValueError:
-            candidate = None
+            prompt = (
+                (PROMPTS / prompt_name).read_text().replace("{target_region}", "[0, 0, 999, 999]")
+            )
+            try:
+                candidate = await pipeline._infer_valid(
+                    [crop],
+                    prompt,
+                    _formula_text
+                    if is_formula
+                    else _structured_region
+                    if inline_math
+                    else _region_text,
+                    diagnostics,
+                    page.page_idx,
+                    stage,
+                    None,
+                )
+            except ValueError:
+                continue
+            if expected is None:
+                break
+            agrees = (
+                (canonical_math(candidate) == canonical_math(expected))
+                if is_formula
+                else ([u[0] for u in _units(candidate)] == [u[0] for u in _units(expected)])
+                if inline_math
+                else _agree(candidate, expected)
+            )
+            if agrees:
+                break
     valid_original = (
         not formula_is_suspicious(original)
         if is_formula
@@ -281,7 +319,15 @@ async def _recover(
     matches = (
         (canonical_math(candidate) == canonical_math(expected))
         if is_formula and candidate and expected
-        else bool(candidate and expected and _agree(candidate, expected))
+        else bool(
+            candidate
+            and expected
+            and (
+                [u[0] for u in _units(candidate)] == [u[0] for u in _units(expected)]
+                if inline_math
+                else _agree(candidate, expected)
+            )
+        )
     )
     accepted = bool(candidate and ((expected and matches) or (not expected and not valid_original)))
     if accepted:
@@ -316,7 +362,7 @@ async def verify_page(
     diagnostics: list[Diagnostic],
     recovery: Callable[[], Path] | None = None,
     *,
-    crop_pdf: Callable[..., Path] | None = None,
+    crop_pdf: Callable[..., Path | None] | None = None,
     region_imagepath: Path | None = None,
 ) -> Page:
     """Align a single independent reading in order and inspect only disputed blocks."""
@@ -375,6 +421,9 @@ async def verify_page(
                 }
             )
             continue
+        inline_math = block.type not in _FORMULAS and any(
+            left[i].startswith("math:") for i, owner in enumerate(owners) if owner == index
+        )
         # For text, recover the whole block against context-bounded independent units.
         expected = " ".join(differences[index])
         if block.type not in _FORMULAS:
@@ -383,12 +432,14 @@ async def verify_page(
                 mapping = SequenceMatcher(
                     None, left, [x[0] for x in right], autojunk=False
                 ).get_opcodes()
-                selected = [
-                    right[j][1]
-                    for tag, a, b, c, d in mapping
-                    if b > own_positions[0] and a <= own_positions[-1]
-                    for j in range(c, d)
-                ]
+                selected: list[str] = []
+                start, end = own_positions[0], own_positions[-1] + 1
+                for tag, a, b, c, d in mapping:
+                    if b <= start or a >= end:
+                        continue
+                    if tag == "equal":
+                        c, d = c + max(start - a, 0), c + min(end - a, b - a)
+                    selected.extend(right[j][1] for j in range(c, d))
                 expected = " ".join(selected)
         await _recover(
             pipeline,
@@ -400,6 +451,7 @@ async def verify_page(
             crop_pdf,
             "advanced_region",
             expected or None,
+            inline_math=inline_math,
         )
     diagnostics.append(
         {
@@ -417,7 +469,7 @@ async def verify_suspicious_regions(
     page: Page,
     imagepath: Path,
     diagnostics: list[Diagnostic],
-    crop_pdf: Callable[..., Path] | None = None,
+    crop_pdf: Callable[..., Path | None] | None = None,
 ) -> Page:
     """Recover malformed content locally; ordinary text does not trigger a reread."""
     for index, block in enumerate(page.blocks):
@@ -433,169 +485,3 @@ async def verify_suspicious_regions(
                 pipeline, page, block, index, imagepath, diagnostics, crop_pdf, "standard_region"
             )
     return page
-
-
-async def verify_small_text_regions(
-    pipeline: VerificationPipeline,
-    page_idx: int,
-    *,
-    input_items: list[Payload],
-    regions: Sequence[Sequence[float]],
-    pdf_path: Path | None,
-    image: Image.Image | Path | str | None,
-    workdir: Path,
-    diagnostics: list[Diagnostic],
-) -> None:
-    """Compare a separate model pass over small-text crops with the page extraction."""
-    import asyncio
-
-    from .pipeline import PROMPTS, _formula_crop
-
-    allowed = {
-        "text",
-        "content",
-        "abstract",
-        "reference_content",
-        "doc_title",
-        "paragraph_title",
-        "footnote",
-        "vision_footnote",
-        "header",
-        "footer",
-        "number",
-        "formula_number",
-    }
-    for index, box in enumerate(regions):
-        overlapping = [
-            item
-            for item in input_items
-            if item["category"] in allowed
-            and item["bbox"][0] < box[2]
-            and item["bbox"][2] > box[0]
-            and item["bbox"][1] < box[3]
-            and item["bbox"][3] > box[1]
-        ]
-        if not overlapping:
-            covered = any(
-                item["bbox"][0] < box[2]
-                and item["bbox"][2] > box[0]
-                and item["bbox"][1] < box[3]
-                and item["bbox"][3] > box[1]
-                for item in input_items
-                if item["category"]
-                in {
-                    "table",
-                    "display_formula",
-                    "inline_formula",
-                    "image",
-                    "chart",
-                    "header_image",
-                    "footer_image",
-                    "seal",
-                }
-            )
-            if covered:
-                continue
-            diagnostics.append(
-                {
-                    "page_idx": page_idx,
-                    "stage": "small_text_verification",
-                    "status": "unresolved",
-                    "region": index,
-                }
-            )
-            crop = await asyncio.to_thread(
-                _formula_crop,
-                pdf_path,
-                page_idx,
-                box,
-                image,
-                workdir,
-                10000 + index,
-                pipeline.settings,
-            )
-            try:
-                recovered = await pipeline._infer_valid(
-                    [crop],
-                    (PROMPTS / "region_ocr.txt")
-                    .read_text()
-                    .replace("{target_region}", "[0, 0, 1000, 1000]"),
-                    _region_text,
-                    diagnostics,
-                    page_idx,
-                    "small_text_region",
-                    None,
-                )
-            except ValueError:
-                recovered = "Small-text region could not be transcribed"
-            input_items.append(
-                {
-                    "category": "text",
-                    "bbox": box,
-                    "content": recovered,
-                    "_uncertain": True,
-                    "_uncertain_crop": str(crop),
-                }
-            )
-            continue
-        crop = await asyncio.to_thread(
-            _formula_crop, pdf_path, page_idx, box, image, workdir, 10000 + index, pipeline.settings
-        )
-
-        try:
-            result = await pipeline._infer_valid(
-                [crop],
-                (PROMPTS / "region_ocr.txt")
-                .read_text()
-                .replace("{target_region}", "[0, 0, 1000, 1000]"),
-                _region_text,
-                diagnostics,
-                page_idx,
-                "small_text_region",
-                None,
-            )
-        except ValueError:
-            for item in overlapping:
-                item["_uncertain"] = True
-                item["_uncertain_crop"] = str(crop)
-            diagnostics.append(
-                {
-                    "page_idx": page_idx,
-                    "stage": "small_text_verification",
-                    "status": "unresolved",
-                    "region": index,
-                }
-            )
-            continue
-        evidence = _tokens(result)
-        extracted_text = " ".join(item["content"] for item in overlapping)
-        extracted = _tokens(extracted_text)
-        missing = evidence - extracted
-        total = max(sum(evidence.values()), 1)
-        if (
-            any(any(char.isdigit() for char in word) for word in missing)
-            or sum(missing.values()) / total > 0.25
-            or (evidence == extracted and not _agree(result, extracted_text))
-        ):
-            diagnostics.append(
-                {
-                    "page_idx": page_idx,
-                    "stage": "small_text_verification",
-                    "status": "unresolved",
-                    "region": index,
-                    "missing_tokens": dict(missing.most_common(20)),
-                }
-            )
-            for item in overlapping:
-                item["_uncertain"] = True
-                item["_uncertain_crop"] = str(crop)
-                item["_uncertain_alternative"] = result
-            continue
-        diagnostics.append(
-            {
-                "page_idx": page_idx,
-                "stage": "small_text_verification",
-                "status": "agreed",
-                "region": index,
-            }
-        )
