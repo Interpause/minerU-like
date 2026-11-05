@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import BinaryIO, Self
 
 import httpx2 as httpx
+from PIL import Image, UnidentifiedImageError
 
 from .config import RuntimeSettings
 from .contracts import Payload
+from .geometry import ImageGeometry, ovis_size
 
 
 class InferenceError(RuntimeError):
@@ -32,12 +34,20 @@ class InferenceResponse(str):
     raw_text: str
     finish_reason: str
     usage: Payload
+    image_geometry: tuple[ImageGeometry, ...]
 
-    def __new__(cls, raw_text: str, finish_reason: str, usage: Payload) -> Self:
+    def __new__(
+        cls,
+        raw_text: str,
+        finish_reason: str,
+        usage: Payload,
+        image_geometry: tuple[ImageGeometry, ...] = (),
+    ) -> Self:
         result = super().__new__(cls, raw_text)
         result.raw_text = raw_text
         result.finish_reason = finish_reason
         result.usage = usage
+        result.image_geometry = image_geometry
         return result
 
 
@@ -260,7 +270,12 @@ class InferenceRuntime:
         raise InferenceError(last_error or "Inference server failed to start")
 
     async def infer(
-        self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        self,
+        images: list[Path],
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        response_schema: Payload | None = None,
     ) -> InferenceResponse:
         if not 1 <= len(images) <= 2:
             raise InferenceError("Inference requires one or two images")
@@ -268,8 +283,21 @@ class InferenceRuntime:
         if not 0 < limit <= self.settings.max_tokens or limit >= self.settings.context_size:
             raise InferenceError("Requested output token limit is invalid")
         content = []
+        geometries: list[ImageGeometry] = []
         for image in images:
             path = self._asset(image, "image")
+            try:
+                with Image.open(path) as image_data:
+                    size = image_data.size
+                maximum = self.settings.image_max_tokens
+                effective = (
+                    ovis_size(size, self.settings.image_min_tokens, maximum)
+                    if self.settings.mode == "managed" and maximum not in (None, -1)
+                    else None
+                )
+                geometries.append(ImageGeometry(size, size, size, effective))
+            except (OSError, UnidentifiedImageError):
+                pass
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             content.append(
                 {
@@ -292,30 +320,42 @@ class InferenceRuntime:
         started = time.monotonic()
         finish_reason, usage = None, {}
         try:
-            if self.settings.mode == "managed" and self.settings.image_max_tokens not in (None, -1):
+            if (
+                self.settings.mode == "managed"
+                and len(geometries) == len(images)
+                and all(g.image_tokens is not None for g in geometries)
+            ):
                 tokens = await client.post(
                     "tokenize", json={"content": prompt, "add_special": True}
                 )
                 tokens.raise_for_status()
                 count = len(tokens.json()["tokens"])
                 if (
-                    count + len(images) * self.settings.image_max_tokens + limit + 256
+                    count + sum(g.image_tokens or 0 for g in geometries) + limit + 256
                     > self.settings.context_size
                 ):
-                    raise InferenceError(
-                        "Prompt, image allowance and output exceed the context size"
-                    )
+                    raise InferenceError("Prompt, image tokens and output exceed the context size")
+            elif self.settings.mode == "managed":
+                logging.getLogger(__name__).info(
+                    "Image token context estimate unavailable; backend will enforce its context limit"
+                )
+            request: Payload = {
+                "model": self._alias,
+                "messages": [{"role": "user", "content": content}],
+                "temperature": 0,
+                "max_tokens": limit,
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+            if response_schema is not None:
+                request["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "ovis_task", "schema": response_schema},
+                }
             async with asyncio.timeout(self.settings.request_timeout):
                 response = await client.post(
                     "v1/chat/completions",
-                    json={
-                        "model": self._alias,
-                        "messages": [{"role": "user", "content": content}],
-                        "temperature": 0,
-                        "max_tokens": limit,
-                        "stream": False,
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
+                    json=request,
                 )
             response.raise_for_status()
             payload = response.json()
@@ -327,7 +367,7 @@ class InferenceRuntime:
             result = choice["message"]["content"]
             if not isinstance(result, str):
                 raise InferenceError("Inference response has no text content")
-            return InferenceResponse(result, finish_reason, usage)
+            return InferenceResponse(result, finish_reason, usage, tuple(geometries))
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:500]
             if self.settings.api_key:

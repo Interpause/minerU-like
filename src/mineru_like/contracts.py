@@ -14,7 +14,12 @@ SQLiteRecord: TypeAlias = dict[str, Any]
 
 class Inference(Protocol):
     async def infer(
-        self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+        self,
+        images: list[Path],
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        response_schema: Payload | None = None,
     ) -> str: ...
 
 

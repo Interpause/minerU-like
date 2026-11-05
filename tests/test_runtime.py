@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 
 import httpx2 as httpx
 import pytest
+from PIL import Image
 
 from mineru_like.config import RuntimeSettings
 from mineru_like.runtime import InferenceError, InferenceRuntime
@@ -115,7 +116,7 @@ async def test_managed_preflight_rejects_context_overflow(tmp_path: Path) -> Non
     )
     runtime.state = "ready"
     image = tmp_path / "page.png"
-    image.write_bytes(b"image")
+    Image.new("RGB", (3000, 3000)).save(image)
     with pytest.raises(InferenceError, match="context size"):
         await runtime.infer([image, image], "prompt")
     assert calls == ["/tokenize"]
@@ -282,4 +283,59 @@ async def test_concurrent_managed_requests_and_cancellation(tmp_path: Path) -> N
     result = await second
     assert result == "ok" and result.usage == {"completion_tokens": 2}
     assert runtime.state == "ready"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_schema_forwarded_and_backend_rejection_propagates(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "vision"}]})
+        return httpx.Response(400, text="unsupported schema")
+
+    runtime = make_runtime(handler)
+    image = tmp_path / "page.png"
+    Image.new("RGB", (32, 32)).save(image)
+    schema = {"type": "array"}
+    with pytest.raises(InferenceError, match="unsupported schema"):
+        await runtime.infer([image], "prompt", response_schema=schema)
+    assert json.loads(requests[-1].content)["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "ovis_task", "schema": schema},
+    }
+    assert len(requests) == 2
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maximum", [8192, None])
+async def test_context_uses_actual_images_or_skips_unknown(
+    tmp_path: Path, maximum: int | None
+) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1] * 100})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+        )
+
+    runtime = InferenceRuntime(
+        RuntimeSettings(context_size=20000, max_tokens=16000, image_max_tokens=maximum)
+    )
+    runtime._client = httpx.AsyncClient(
+        base_url="http://server", transport=httpx.MockTransport(handler)
+    )
+    runtime.state = "ready"
+    image = tmp_path / "page.png"
+    Image.new("RGB", (640, 640)).save(image)
+    response = await runtime.infer([image, image], "prompt")
+    assert response == "ok"
+    assert calls == (["/tokenize", "/v1/chat/completions"] if maximum else ["/v1/chat/completions"])
+    assert (response.image_geometry[0].effective_size is None) == (maximum is None)
     await runtime.close()
