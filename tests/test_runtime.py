@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -91,7 +92,9 @@ async def test_managed_preflight_rejects_context_overflow(tmp_path):
         return httpx.Response(200, json={"tokens": list(range(5000))})
 
     runtime = InferenceRuntime(
-        RuntimeSettings(context_size=32768, max_tokens=16384, image_max_tokens=6000)
+        RuntimeSettings(
+            context_size=32768, max_tokens=16384, image_max_tokens=6000, parallel_slots=2
+        )
     )
     runtime._client = httpx.AsyncClient(
         base_url="http://server", transport=httpx.MockTransport(handler)
@@ -102,6 +105,58 @@ async def test_managed_preflight_rejects_context_overflow(tmp_path):
     with pytest.raises(InferenceError, match="context size"):
         await runtime.infer([image, image], "prompt")
     assert calls == ["/tokenize"]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_managed_command_and_subprocess_library_environment(monkeypatch, tmp_path):
+    calls = []
+    binary = tmp_path / "bin" / "llama-server"
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/lib")
+
+    class Child:
+        returncode = None
+
+        async def communicate(self):
+            if calls[-1][0][-1] == "--version":
+                return b"version: build 12110 (commit cd959bae9)", b""
+            return b"CUDA0: device", b""
+
+    async def launch(*args, **kwargs):
+        calls.append((args, kwargs))
+        child = Child()
+        if args[-1] in {"--version", "--list-devices"}:
+            child.returncode = 0
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    runtime = InferenceRuntime(
+        RuntimeSettings(parallel_slots=3, context_size=32768, batch_size=1024, ubatch_size=256)
+    )
+    await runtime._check_version(binary)
+    runtime.device = await runtime._select_device(binary)
+
+    async def ready():
+        return None
+
+    runtime._check_models = ready
+    await runtime._launch(binary, tmp_path / "model", tmp_path / "mmproj")
+    command = calls[-1][0]
+
+    def value(flag):
+        return command[command.index(flag) + 1]
+
+    assert value("--parallel") == "3"
+    assert value("--ctx-size") == str(3 * 32768)
+    assert value("--batch-size") == "1024"
+    assert value("--ubatch-size") == "256"
+    assert value("--cache-type-k") == value("--cache-type-v") == "bf16"
+    assert "--no-kv-unified" in command
+    assert "--no-cont-batching" in command
+    for _, kwargs in calls:
+        assert kwargs["env"]["LD_LIBRARY_PATH"] == f"{binary.parent}:/existing/lib"
+    assert os.environ["LD_LIBRARY_PATH"] == "/existing/lib"
+    runtime._process = None
     await runtime.close()
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Default data storage is now gitignored `data/`, with supplied llama.cpp builds in `data/b12110/`, Q8_0 model/BF16 projector defaults in `data/models/`, and provisioned cwebp under `data/tools/`.
+- Relative configuration paths resolve beside the config file; omitted managed runtime/model paths derive from `data_dir`.
+- Default KV cache precision is BF16. Context remains 32,768 tokens **per slot**, with a 16,384-token output limit and 1,024 minimum image tokens.
+- Expose parallel slots and token batch/microbatch sizes in the template. Managed total context allocation scales by slot count; application inference remains serial.
+- Include the binaries directory in managed subprocess library lookup so optional colocated CUDA libraries work during probing and inference.
+- Audited and documented the distinct PDF/SVG dependencies; retained directly used libraries and the pinned DocVortex version.
+- Validation: 144 tests passed, one opt-in Flatpak launch test skipped; lint passed. A managed CPU image-inference smoke test with Q6_K weights and BF16 KV confirmed two slots with 32,768 tokens each. Q8_0 weights and the default profile's CUDA/6 GB memory peak remain untested.
+
 ## 0.1.0 — 2026-11-05
 
 Initial local, single-user document parsing server. Compatibility targets the uploads/jobs protocol consumed by **llm-for-zotero 3.9.16**, without plugin modifications; this is not a complete implementation of every MinerU API.

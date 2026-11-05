@@ -51,6 +51,14 @@ class InferenceRuntime:
             raise InferenceError(f"{name} is not a GGUF file: {path}")
         return path
 
+    @staticmethod
+    def _binary_env(binary: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        library_dir = str(Path(binary).resolve().parent)
+        existing = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = f"{library_dir}:{existing}" if existing else library_dir
+        return env
+
     async def _check_version(self, binary: Path) -> None:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -58,6 +66,7 @@ class InferenceRuntime:
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._binary_env(binary),
             )
             try:
                 out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
@@ -84,6 +93,7 @@ class InferenceRuntime:
                 "--list-devices",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._binary_env(binary),
             )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
         except (TimeoutError, asyncio.CancelledError) as exc:
@@ -191,10 +201,11 @@ class InferenceRuntime:
                 "--alias",
                 self._alias,
                 "--parallel",
-                "1",
+                str(s.parallel_slots),
                 "--no-cont-batching",
+                "--no-kv-unified",
                 "--ctx-size",
-                str(s.context_size),
+                str(s.context_size * s.parallel_slots),
                 "--batch-size",
                 str(s.batch_size),
                 "--ubatch-size",
@@ -224,7 +235,11 @@ class InferenceRuntime:
             if self.device == "cpu":
                 command += ["--device", "none", "--no-mmproj-offload", "--no-kv-offload"]
             self._process = await asyncio.create_subprocess_exec(
-                *command, stdout=self._log, stderr=asyncio.subprocess.STDOUT, start_new_session=True
+                *command,
+                stdout=self._log,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+                env=self._binary_env(binary),
             )
             self._client = self._make_client(f"http://127.0.0.1:{port}", key)
             deadline = asyncio.get_running_loop().time() + s.startup_timeout

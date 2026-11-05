@@ -25,7 +25,25 @@ uv sync --locked
 cp config.example.toml config.local.toml
 ```
 
-Edit `config.local.toml` to set absolute paths to **llama-server build b12110 / commit cd959bae9**, OvisOCR3 GGUF weights, and the matching BF16 vision projector. Keep the runtime distribution's shared libraries alongside its executable. Model weights and runtime binaries are not included. Setup records the SHA-256 of your local files; startup verifies the recorded files. User-provisioned assets are supported without copying them.
+The default, gitignored `data/` directory holds supplied inference assets, provisioned tools, and job data. Put **llama-server build b12110 / commit cd959bae9** in its build directory and the **Q8_0 model / BF16 projector** in `models/`:
+
+```text
+data/
+  b12110/
+    llama-server
+    libggml-*.so, libllama.so, ...
+    optional CUDA shared libraries
+  models/
+    OvisOCR3.Q8_0.gguf
+    OvisOCR3.mmproj-bf16.gguf
+  tools/
+    libwebp-1.6.0-linux-x86-64/   # provisioned by setup
+  uploads/, outputs/, work/, failures/, state.sqlite3, ...
+```
+
+Keep the complete llama.cpp binaries folder together. Optional CUDA libraries placed beside the executable are included in the managed child's library search path, including during device detection. Model weights and llama.cpp binaries are supplied by the user. Setup records their SHA-256; startup verifies the registered files. You can override these paths or choose another quant explicitly. The tested runtime build remains pinned.
+
+Relative paths, including `data_dir`, resolve beside the configuration file, so the command can be launched from another working directory with an absolute config path. If managed model/runtime paths are omitted, they default beneath the configured data directory using the layout above. Absolute paths remain supported.
 
 When compression is enabled, explicit setup also provisions the reference `cwebp` 1.6.0 encoder on Linux x86_64 if none is installed or configured. Its download URL and SHA-256 are pinned; the distribution includes its notices. Use `setup --skip-cwebp` for offline setup or configure your own encoder. Ordinary parsing never downloads tools. Without `cwebp`, lossless trials remain available and diagnostics report that named-preset lossy trials were skipped.
 
@@ -123,7 +141,19 @@ One worker serializes documents and model requests; the default queue accepts ei
 
 Default retention is 24 hours after terminal status or last result download; abandoned uploads expire after one hour. Failed-job work, including raw model responses, stays under the data directory's `failures/` until retention expires. Treat that directory as document data. Canceled unpublished work is removed. `max_upload_bytes` limits each file; `max_storage_bytes` bounds upload reservations plus published outputs. Temporary renders and retained failure diagnostics can consume additional space.
 
-The initial managed quality profile uses BF16 weights, f16 KV, one slot and a 32768-token context. Q6_K weights are an explicit alternative; KV precision below Q8_0 is rejected. Estimated app usage is roughly **3–4 GiB BF16** or **2.2–3.2 GiB Q6_K**, targeting headroom on a nominal 6 GB GPU. These are estimates, not measured peaks. No additional GPU models are loaded. CPU native extraction and rendering are practical; Ovis vision and generation on CPU are considerably slower. The tested Q6_K one-page structured request took about 44 seconds on the development machine; this is not a latency guarantee.
+The default managed profile uses **Q8_0 model weights, a BF16 projector, BF16 KV, one slot, 32,768 context tokens per slot, and a 16,384-token output limit**. `image_min_tokens = 1024` and `image_max_tokens = 4096` bound each image's requested token range. BF16 and Q6_K model weights, and f16 or Q8_0 KV, remain explicit alternatives; lower KV precision is rejected. Weight quantization and KV precision are separate settings. The default Q8_0 profile still needs measured CUDA/6 GB validation. Earlier rough estimates of 3–4 GiB for BF16 weights and 2.2–3.2 GiB for Q6_K weights are not measured peaks or a Q8_0 guarantee.
+
+| Runtime setting | Meaning | Default |
+| --- | --- | --- |
+| `context_size` | Input, image and generated tokens available to each slot | 32768 |
+| `parallel_slots` | Backend request slots; total context allocation is slots × per-slot context | 1 |
+| `max_tokens` | Maximum generated tokens for one request, within that slot's context | 16384 |
+| `batch_size` | Logical token batch size used during inference/prompt processing | 512 |
+| `ubatch_size` | Physical compute microbatch; affects compute memory and throughput | 128 |
+
+Token batching helps a **single request** process its prompt. Batching concurrent requests requires multiple slots and application scheduling; one user could generate such requests for independent pages/crops, but the current document worker and inference adapter are serial. Increasing `parallel_slots` alone reserves more context without making parsing concurrent. The managed command passes total `--ctx-size = context_size * parallel_slots` with fixed per-slot allocation; keep one slot for the default 6 GB profile. External services manage their own slot allocation.
+
+No additional GPU models are loaded. CPU native extraction and rendering are practical; Ovis vision and generation on CPU are considerably slower. The tested Q6_K one-page structured request took about 44 seconds on the development machine; this is not a latency guarantee.
 
 Set a top-level `api_key` to require Bearer authentication on work/data routes. Health remains unauthenticated for the plugin's process manager. The default loopback binding is intended for one local user. Configure a separate data directory for each independent server.
 
@@ -140,3 +170,16 @@ The opt-in integration harness in `tests/integration/` loads an unchanged plugin
 Runtime diagnostics distinguish model-call purpose/count/duration from `source_assets_cpu` and `compression_cpu` checks. The regression suite runs offline from the service: it is never executed during a parse.
 
 Third-party prompt and dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## PDF and SVG dependencies
+
+These libraries have different production roles rather than interchangeable duplicate backends:
+
+| Dependency | Role |
+| --- | --- |
+| `pypdfium2` | PDF inspection and rendering; also required by DocVortex. Supplies the independent reference render for SVG checks. |
+| `pymupdf` | Source PDF-to-SVG export, PDF object geometry, original-image recovery, and cropped PDF documents. |
+| `resvg-py` | Renders SVG to pixels for visual inference and candidate fidelity checks. |
+| `svgelements` | Parses SVG paths/transforms and computes geometry for removal of unrelated page content. |
+
+The remaining runtime dependencies are used directly for the API, HTTP inference/client requests, validated settings, image handling, or CPU comparisons. ReportLab is declared for generated PDF tests and is also a DocVortex runtime dependency. DocVortex is pinned; other dependency ranges are resolved to exact versions/hashes by `uv.lock`.

@@ -19,13 +19,14 @@ class RuntimeSettings(BaseModel):
     device: Literal["auto", "cuda", "cpu"] = "auto"
     context_size: int = Field(32768, ge=4096)
     max_tokens: int = Field(16384, ge=256)
+    parallel_slots: int = Field(1, ge=1)
     image_min_tokens: int = Field(1024, ge=1)
     image_max_tokens: int = Field(4096, ge=1)
     batch_size: int = Field(512, ge=1)
     ubatch_size: int = Field(128, ge=1)
     startup_timeout: float = Field(300, gt=0)
     request_timeout: float = Field(600, gt=0)
-    kv_cache: Literal["f16", "q8_0"] = "f16"
+    kv_cache: Literal["bf16", "f16", "q8_0"] = "bf16"
 
 
 class LibreOfficeSettings(BaseModel):
@@ -76,7 +77,7 @@ class SVGSettings(BaseModel):
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    data_dir: Path = Path(".local/mineru-like")
+    data_dir: Path = Path("data")
     api_key: str | None = None
     host: str = "127.0.0.1"
     port: int = Field(8000, ge=1, le=65535)
@@ -100,7 +101,32 @@ class Settings(BaseModel):
 
 
 def load_settings(path: Path | None = None) -> Settings:
+    base = Path.cwd() if path is None else path.resolve().parent
     if path is None:
-        return Settings()
-    with path.open("rb") as stream:
-        return Settings.model_validate(tomllib.load(stream))
+        settings = Settings()
+    else:
+        with path.open("rb") as stream:
+            settings = Settings.model_validate(tomllib.load(stream))
+
+    def resolve(value):
+        return (base / value).resolve() if value is not None else None
+
+    settings.data_dir = resolve(settings.data_dir)
+    defaults = {
+        "binary": settings.data_dir / "b12110" / "llama-server",
+        "model": settings.data_dir / "models" / "OvisOCR3.Q8_0.gguf",
+        "mmproj": settings.data_dir / "models" / "OvisOCR3.mmproj-bf16.gguf",
+    }
+    for field, default in defaults.items():
+        value = getattr(settings.runtime, field)
+        if value is not None:
+            setattr(settings.runtime, field, resolve(value))
+        elif settings.runtime.mode == "managed":
+            setattr(settings.runtime, field, default)
+    settings.compression.cwebp_binary = resolve(settings.compression.cwebp_binary)
+    settings.libreoffice.binary = resolve(settings.libreoffice.binary)
+    if "/" in settings.libreoffice.flatpak_binary:
+        settings.libreoffice.flatpak_binary = str(
+            resolve(Path(settings.libreoffice.flatpak_binary))
+        )
+    return settings

@@ -12,6 +12,7 @@ htmlcov/
 .env
 config.local.toml
 .local/
+data/
 *.gguf
 *.sqlite*
 pytest-of-*/

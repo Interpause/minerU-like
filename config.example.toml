@@ -1,5 +1,5 @@
-# Copy to config.local.toml and set absolute runtime/model paths.
-data_dir = ".local/mineru-like"
+# Copy to config.local.toml. Relative paths resolve beside the config file.
+data_dir = "data"
 host = "127.0.0.1"
 port = 8000
 captioning = true
@@ -28,13 +28,18 @@ enabled = true
 
 [runtime]
 mode = "managed"
-binary = "/absolute/path/to/llama-server"
-model = "/absolute/path/to/OvisOCR3.BF16.gguf"
-mmproj = "/absolute/path/to/OvisOCR3.mmproj-bf16.gguf"
+binary = "data/b12110/llama-server"
+model = "data/models/OvisOCR3.Q8_0.gguf"
+mmproj = "data/models/OvisOCR3.mmproj-bf16.gguf"
 device = "auto"
-kv_cache = "f16"
-context_size = 32768
+kv_cache = "bf16"
+context_size = 32768 # Per slot; total allocation is context_size * parallel_slots.
 max_tokens = 16384
+image_min_tokens = 1024
+image_max_tokens = 4096
+parallel_slots = 1 # More backend slots do not make the serial parsing pipeline concurrent.
+batch_size = 512 # Logical token batch size, including within a single request.
+ubatch_size = 128 # Physical compute microbatch; smaller values reduce peak compute memory.
 
 # External mode uses the same task adapter without managing the remote process:
 # mode = "external"

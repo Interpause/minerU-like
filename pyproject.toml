@@ -10,11 +10,15 @@ dependencies = [
   "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
   "pillow>=11,<13",
+  # PDFium: page inspection/rendering and the independent SVG reference renderer.
   "pypdfium2>=4.30,<6",
   "docvortex==0.6.13",
   "numpy>=2,<3",
+  # MuPDF: source-preserving SVG export, PDF object geometry and crop documents.
   "pymupdf>=1.26,<2",
+  # Render SVG candidates to pixels for fidelity checks and visual inference.
   "resvg-py>=0.5,<1",
+  # Parse SVG path geometry/transforms to remove unrelated page content.
   "svgelements>=1.9,<2",
 ]
 
