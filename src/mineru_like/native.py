@@ -186,6 +186,28 @@ def _inventory(path):
             if name.lower().endswith(".xml") and archive.getinfo(name).file_size < 20_000_000:
                 data = archive.read(name)
                 math += len(re.findall(rb"<(?:[\w.-]+:)?(?:oMath|math)(?:\s|>)", data))
+                # Office grouped or floating shapes can be omitted by the converter.
+                if re.search(rb"<(?:[\w.-]+:)?(?:grpSp|wgp|anchor)(?:\s|>)", data):
+                    unsupported.append(name)
+                if re.search(rb"<(?:[\w.-]+:)?graphicFrame(?:\s|>)", data):
+                    try:
+                        root = ET.fromstring(data)
+                        for frame in root.iter():
+                            if frame.tag.rsplit("}", 1)[-1] != "graphicFrame":
+                                continue
+                            graphic_data = [
+                                node
+                                for node in frame.iter()
+                                if node.tag.rsplit("}", 1)[-1] == "graphicData"
+                            ]
+                            if not graphic_data or any(
+                                node.get("uri")
+                                != "http://schemas.openxmlformats.org/drawingml/2006/table"
+                                for node in graphic_data
+                            ):
+                                unsupported.append(name)
+                    except ET.ParseError:
+                        unsupported.append(name)
         media = len(
             {
                 hashlib.sha256(archive.read(name)).digest()
@@ -194,6 +216,66 @@ def _inventory(path):
             }
         )
         return unsupported, math, media
+
+
+def _ooxml_word_count(path: Path, ext: str) -> int:
+    if ext not in {"docx", "pptx", "xlsx"} or not zipfile.is_zipfile(path):
+        return 0
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        if ext == "docx":
+            names = [n for n in names if n == "word/document.xml"]
+        elif ext == "pptx":
+            names = [n for n in names if re.fullmatch(r"ppt/slides/slide[0-9]+\.xml", n)]
+        else:
+            names = [n for n in names if n == "xl/sharedStrings.xml"]
+        words = 0
+        for name in names:
+            if archive.getinfo(name).file_size > 20_000_000:
+                continue
+            try:
+                root = ET.fromstring(archive.read(name))
+            except ET.ParseError:
+                continue
+            text = " ".join(
+                node.text or "" for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "t"
+            )
+            words += len(re.findall(r"\w+", text))
+        return words
+
+
+def _spreadsheet_render_regions(pdf: Path, workdir: Path, settings):
+    """Split oversized sheets into overlapping, bounded PDF regions."""
+    import math
+
+    import pymupdf as fitz
+
+    size = min(900.0, settings.max_image_side * 72 / settings.render_dpi)
+    stride = size * 0.9
+    regions = []
+    with fitz.open(pdf) as source:
+        specs = []
+        for index, page in enumerate(source):
+            rect = page.rect
+            columns = max(1, math.ceil(max(0, rect.width - size) / stride) + 1)
+            rows = max(1, math.ceil(max(0, rect.height - size) / stride) + 1)
+            if len(specs) + rows * columns > settings.max_pages:
+                raise ValueError("Spreadsheet visual rendering exceeds the configured region limit")
+            for row in range(rows):
+                for col in range(columns):
+                    x, y = col * stride, row * stride
+                    specs.append(
+                        (index, (x, y, min(x + size, rect.width), min(y + size, rect.height)))
+                    )
+        workdir.mkdir(parents=True, exist_ok=True)
+        for number, (index, bounds) in enumerate(specs):
+            target = workdir / f"region-{number}.pdf"
+            with fitz.open() as piece:
+                piece.insert_pdf(source, from_page=index, to_page=index)
+                piece[0].set_cropbox(fitz.Rect(*bounds))
+                piece.save(target)
+            regions.append((target, index + 1, bounds))
+    return regions
 
 
 async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> DocumentResult:
@@ -208,26 +290,78 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
         # The converter does not identify which output assets represent inline SVGs,
         # so their preservation cannot be verified reliably.
         raise ValueError("Unsupported source content: inline SVG preservation cannot be verified")
-    if unsupported:
-        raise ValueError(
-            "Unsupported source content: charts, diagrams or embedded objects cannot be faithfully rendered by the native converter"
+    needs_visual = bool(unsupported)
+
+    async def visual_fallback():
+        # A rendered sheet cannot provide complete cell semantics.
+        if ext in {"xls", "xlsx", "ods", "csv", "tsv"}:
+            raise ValueError(
+                "Native spreadsheet conversion failed; cells cannot be recovered from a rendered PDF"
+            )
+        from .libreoffice import LibreOfficeRenderer
+
+        settings = getattr(pipeline.settings, "libreoffice", None)
+        if settings is None or pipeline.runtime is None:
+            raise ValueError("Native conversion failed; visual recovery is unavailable")
+        pdf = await LibreOfficeRenderer(settings).convert(path, ext, workdir)
+        fallback = await pipeline.parse(
+            pdf, "rendered.pdf", "ocr", "standard", workdir / "libreoffice-fallback"
         )
-    result = await asyncio.to_thread(docvortex.parse, path.read_bytes(), file_suffix=ext)
+        for page in fallback.pages:
+            page.metadata.update(
+                {
+                    "source": "libreoffice_visual_fallback",
+                    "renderer_page": page.page_idx + 1,
+                    "source_unit": "unmatched",
+                }
+            )
+            for block in page.blocks:
+                block.metadata.update(
+                    {
+                        "source": "libreoffice_visual_fallback",
+                        "renderer_page": page.page_idx + 1,
+                        "source_unit": "unmatched",
+                        "source_pdf_path": str(pdf),
+                    }
+                )
+        return fallback
+
+    try:
+        result = await asyncio.to_thread(docvortex.parse, path.read_bytes(), file_suffix=ext)
+    except Exception:
+        return await visual_fallback()
     from .pipeline import _Diagnostics
 
     diagnostics = _Diagnostics(workdir / "diagnostics.jsonl")
     for d in result.diagnostics:
         diagnostics.append({"code": d.code, "message": d.message, "page_idx": d.page_index})
     if any(d.code == "broken_page" for d in result.diagnostics):
-        raise ValueError("Native conversion reported a broken page")
+        return await visual_fallback()
     document = result.to_dict()
+    source_words = await asyncio.to_thread(_ooxml_word_count, path, ext)
+
+    def native_content(value):
+        if isinstance(value, dict):
+            return " ".join(
+                native_content(v)
+                for k, v in value.items()
+                if k == "content" or isinstance(v, (dict, list))
+            )
+        if isinstance(value, list):
+            return " ".join(native_content(v) for v in value)
+        return value if isinstance(value, str) else ""
+
+    recovered_words = len(re.findall(r"\w+", native_content(document)))
+    sparse = source_words >= 20 and recovered_words < source_words * 0.2
+    if sparse and ext in {"xls", "xlsx", "ods", "csv", "tsv"}:
+        raise ValueError(
+            "Native spreadsheet conversion is sparse; cell completeness cannot be guaranteed"
+        )
+    needs_visual |= sparse
     recovered_math = len(
         re.findall(r'"type":\s*"(?:equation|equation_inline)"', json.dumps(document))
     )
-    if source_math > recovered_math:
-        raise ValueError(
-            "Unsupported source content: some native mathematical objects were not preserved"
-        )
+    needs_visual |= source_math > recovered_math
     pages, assets = [], {}
     for name, payload in result.assets.items():
         posix = PurePosixPath(name)
@@ -246,6 +380,16 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
             if kind in {"image", "table", "chart", "code"}:
                 body = next((child for child in value if child["type"].endswith("_body")), None)
                 if body is None:
+                    if kind in {"image", "chart"}:
+                        needs_visual = True
+                        diagnostics.append(
+                            {
+                                "code": "native_visual_missing",
+                                "message": f"Native {kind} has no body",
+                                "page_idx": idx,
+                            }
+                        )
+                        continue
                     raise ValueError(f"Native {kind} has no body")
                 content = _inline(body.get("content", ""))
                 image_source = body.get("image_path")
@@ -259,10 +403,18 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                     with Image.open(BytesIO(base64.b64decode(data, validate=True))) as decoded:
                         decoded.convert("RGB").save(target, format="PNG")
                     assets[image_source] = target
+                if kind in {"image", "chart"} and (not image_source or image_source not in assets):
+                    needs_visual = True
+                    diagnostics.append(
+                        {
+                            "code": "native_visual_missing",
+                            "message": f"Native {kind} has no faithful source image",
+                            "page_idx": idx,
+                        }
+                    )
+                    continue
                 if image_source and image_source not in assets:
                     raise ValueError(f"Native image asset is missing: {image_source}")
-                if kind in {"image", "chart"} and not image_source:
-                    raise ValueError(f"Native {kind} has no faithful source image")
                 captions = [
                     _inline(c.get("content", "")) for c in value if c["type"].endswith("_caption")
                 ]
@@ -310,8 +462,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
             if block.image_source
         }
     )
-    if source_media > recovered_media:
-        raise ValueError("Unsupported source content: some embedded images were not preserved")
+    needs_visual |= source_media > recovered_media
     if not pages or len(pages) > pipeline.settings.max_pages:
         raise ValueError("Invalid native document page count")
     from PIL import Image
@@ -403,4 +554,160 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                         + "\n```"
                     )
         page.blocks = enriched
+    if needs_visual:
+        if pipeline.runtime is None:
+            raise ValueError("Unsupported source content: visual inference is unavailable")
+        from .libreoffice import LibreOfficeRenderer
+
+        settings = getattr(pipeline.settings, "libreoffice", None)
+        if settings is None:
+            raise ValueError("Unsupported source content: visual rendering is unavailable")
+        renderer = LibreOfficeRenderer(settings)
+        pdf = await renderer.convert(path, ext, workdir)
+        visual_dir = workdir / "libreoffice-visual"
+        if ext in {"xls", "xlsx", "ods", "csv", "tsv"}:
+            regions = await asyncio.to_thread(
+                _spreadsheet_render_regions, pdf, visual_dir / "regions", pipeline.settings
+            )
+        else:
+            regions = [(pdf, None, None)]
+        from .compression import _replace
+
+        rendered_results = []
+        for region_index, (region_pdf, renderer_page, bounds) in enumerate(regions):
+            visual = await pipeline.parse(
+                region_pdf, "rendered.pdf", "ocr", "standard", visual_dir / str(region_index)
+            )
+            for diagnostic in visual.diagnostics:
+                visual_page = diagnostic.get("page_idx")
+                diagnostics.append(
+                    {
+                        **diagnostic,
+                        "renderer_page": renderer_page
+                        or (visual_page + 1 if isinstance(visual_page, int) else None),
+                        "renderer_region": bounds,
+                    }
+                )
+            for page in visual.pages:
+                rendered_results.append(
+                    (
+                        visual,
+                        page,
+                        renderer_page or page.page_idx + 1,
+                        bounds,
+                        region_index,
+                        region_pdf,
+                    )
+                )
+        # Renderer pagination does not necessarily correspond to native logical pages.
+        # Keep uncertain associations explicit and preserve the native page sequence.
+        selected_types = {"image", "chart", "equation", "display_formula", "inline_formula"}
+        if source_media > recovered_media or source_math > recovered_math:
+            selected_types.add("table")
+        if sparse:
+            selected_types.update({"text", "paragraph_title", "doc_title"})
+        native_text = native_content(document).casefold()
+        count = 0
+        recovered_visual_media = recovered_visual_math = 0
+        native_page_count = len(pages)
+        for (
+            visual,
+            rendered_page,
+            renderer_page,
+            bounds,
+            region_index,
+            region_pdf,
+        ) in rendered_results:
+            # A unique substantial text anchor can establish a logical-page match.
+            rendered_text = " ".join(
+                b.content
+                for b in rendered_page.blocks
+                if b.type in {"text", "paragraph_title", "doc_title"}
+            ).casefold()
+            matches = []
+            for native_page in pages[:native_page_count]:
+                anchors = [
+                    b.content.strip().casefold()
+                    for b in native_page.blocks
+                    if b.type in {"text", "paragraph_title", "doc_title"}
+                    and len(b.content.strip()) >= 30
+                ]
+                if any(anchor in rendered_text for anchor in anchors):
+                    matches.append(native_page)
+            matched_page = matches[0] if len(matches) == 1 else None
+            source_unit = (
+                f"logical page {matched_page.page_idx + 1}" if matched_page else "unmatched"
+            )
+            selected = []
+            for block in rendered_page.blocks:
+                if block.type not in selected_types:
+                    continue
+                if block.type in {"text", "paragraph_title", "doc_title"} and (
+                    not block.content.strip() or block.content.strip().casefold() in native_text
+                ):
+                    continue
+                if block.image_source and block.image_source not in visual.assets:
+                    raise ValueError("Rendered visual asset is missing")
+                for old_name, asset_path in visual.assets.items():
+                    new_name = f"libreoffice_visual/{region_index}/{old_name}"
+                    block.content = _replace(block.content, old_name, new_name)
+                    block.captions = [_replace(text, old_name, new_name) for text in block.captions]
+                    block.footnotes = [
+                        _replace(text, old_name, new_name) for text in block.footnotes
+                    ]
+                    if block.image_source == old_name:
+                        block.image_source = new_name
+                    assets[new_name] = asset_path
+                block.metadata = {
+                    **block.metadata,
+                    "source": "libreoffice_visual_supplement",
+                    "renderer_page": renderer_page,
+                    "renderer_region": bounds,
+                    "source_unit": source_unit,
+                    "source_pdf_path": str(region_pdf),
+                }
+                selected.append(block)
+                recovered_visual_media += block.type in {"image", "chart"}
+                recovered_visual_math += block.type in {
+                    "equation",
+                    "display_formula",
+                    "inline_formula",
+                }
+            if selected and matched_page:
+                matched_page.blocks.extend(selected)
+                count += len(selected)
+            elif selected:
+                pages.append(
+                    Page(
+                        page_idx=len(pages),
+                        blocks=[
+                            Block(
+                                type="text",
+                                content=f"[Visual supplement from rendered page {renderer_page}; source location not matched]",
+                                metadata={"source": "libreoffice_visual_supplement"},
+                            ),
+                            *selected,
+                        ],
+                        metadata={
+                            "page_boundary": "logical",
+                            "source": "libreoffice_visual_supplement",
+                            "renderer_page": renderer_page,
+                            "renderer_region": bounds,
+                            "source_unit": "unmatched",
+                        },
+                    )
+                )
+                count += len(selected)
+        if recovered_visual_media < max(
+            0, source_media - recovered_media
+        ) or recovered_visual_math < max(0, source_math - recovered_math):
+            raise ValueError(
+                "Unsupported source content: visual extraction did not recover all missing media or mathematical objects"
+            )
+        if not count:
+            raise ValueError(
+                "Unsupported source content: LibreOffice visual extraction recovered no visual content"
+            )
+        if len(pages) > pipeline.settings.max_pages:
+            raise ValueError("Document exceeds configured maximum page count")
     return DocumentResult(pages=pages, assets=assets, diagnostics=diagnostics)
