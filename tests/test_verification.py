@@ -303,3 +303,52 @@ async def test_independent_formulas_overlap(context: Path) -> None:
     )
     await verify_suspicious_regions(Overlapping(), page, context, [])
     assert [block.content for block in page.blocks] == ["$$x+y$$", "$$x+y$$"]
+
+
+@pytest.mark.asyncio
+async def test_advanced_checks_agreeing_risky_formula(context: Path) -> None:
+    pipeline = Pipeline("$x+y$", "$$x+y$$")
+    page = Page(
+        0,
+        [
+            Block(
+                "equation",
+                "$x+y$",
+                bbox=(0, 0, 1, 1),
+                metadata={"resolution_risk": {"minimum_symbol_pixels": 5}},
+            )
+        ],
+    )
+    await verify_page(pipeline, page, context, [])
+    assert pipeline.stages == ["advanced_markdown", "standard_region"]
+    assert page.blocks[0].metadata["verification"]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_advanced_does_not_repeat_disputed_risky_formula(context: Path) -> None:
+    pipeline = Pipeline("$x-y$", "$$x*z$$")
+    page = Page(
+        0,
+        [
+            Block(
+                "equation",
+                "$x+y$",
+                bbox=(0, 0, 1, 1),
+                metadata={"resolution_risk": {"minimum_symbol_pixels": 5}},
+            )
+        ],
+    )
+    await verify_page(pipeline, page, context, [])
+    assert pipeline.stages == ["advanced_markdown", "advanced_region"]
+    assert page.blocks[0].content == "$x+y$"
+
+
+@pytest.mark.asyncio
+async def test_formula_placeholder_renders_as_plain_text(context: Path) -> None:
+    page = Page(0, [Block("inline_formula", "x_{", bbox=(0, 0, 1, 1))])
+    await verify_suspicious_regions(Pipeline(region="bad"), page, context, [])
+    block = page.blocks[0]
+    assert block.type == "text"
+    assert block.metadata["verification_original_type"] == "inline_formula"
+    assert block.markdown() == block.content
+    assert block.content.startswith("[Unclear formula;")

@@ -242,6 +242,8 @@ async def _recover(
     if block.bbox is None:
         if is_formula and formula_is_suspicious(original):
             block.metadata["verification_original"] = original
+            block.metadata["verification_original_type"] = block.type
+            block.type = "text"
             block.content = f"[Unclear formula; {_location(page, block)}; zoom if possible.]"
         block.metadata["verification"] = {"status": "unresolved", "reason": "missing bounds"}
         diagnostics.append(
@@ -358,9 +360,12 @@ async def _recover(
     if accepted:
         block.metadata["verification_original"] = original
         block.content = cast(str, candidate)
-    elif not valid_original and candidate is None:
+    elif not valid_original and not accepted:
         kind = "formula" if is_formula else "text"
         block.metadata["verification_original"] = original
+        if is_formula:
+            block.metadata["verification_original_type"] = block.type
+            block.type = "text"
         block.content = f"[Unclear {kind}; {_location(page, block)}; zoom if possible.]"
     block.metadata["verification"] = {
         "status": status,
@@ -412,7 +417,9 @@ async def verify_page(
                 "reason": "independent reading unavailable",
             }
         )
-        return page
+        return await verify_suspicious_regions(
+            pipeline, page, region_imagepath or imagepath, diagnostics, crop_pdf
+        )
     left: list[str] = []
     owners: list[int] = []
     for index, block in enumerate(page.blocks):
@@ -485,6 +492,14 @@ async def verify_page(
         from .pipeline import _gather_cancel
 
         await _gather_cancel(recoveries)
+    await verify_suspicious_regions(
+        pipeline,
+        page,
+        region_imagepath or imagepath,
+        diagnostics,
+        crop_pdf,
+        excluded=set(differences),
+    )
     diagnostics.append(
         {
             "page_idx": page.page_idx,
@@ -502,11 +517,17 @@ async def verify_suspicious_regions(
     imagepath: Path,
     diagnostics: list[Diagnostic],
     crop_pdf: Callable[..., Path | None] | None = None,
+    *,
+    excluded: set[int] | None = None,
 ) -> Page:
     """Recover malformed content locally; ordinary text does not trigger a reread."""
     recoveries = []
     for index, block in enumerate(page.blocks):
-        if block.type in _IGNORED or str(block.metadata.get("source", "")).startswith("native"):
+        if (
+            index in (excluded or set())
+            or block.type in _IGNORED
+            or str(block.metadata.get("source", "")).startswith("native")
+        ):
             continue
         inline_math = block.type not in _FORMULAS and bool(_MATH.search(block.content))
         resolution_risk = bool(block.metadata.get("resolution_risk")) and (
