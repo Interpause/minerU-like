@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import tempfile
@@ -43,6 +44,8 @@ class VerificationError(ValueError):
 def _sequence(text: str) -> list[str]:
     text = re.sub(r"(?im)^\s*\|?[\s:|-]+\|[\s:|-]*$", "", text)
     text = re.sub(r"(?m)^\s*\|", "", text)
+    text = re.sub(r"(?m)\|\s*$", "", text)
+    text = re.sub(r"(?i)</t[dh]>\s*</tr>", "</tr>", text)
     text = re.sub(r"(?i)</t[dh]>", " | ", text)
     text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
     text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text)
@@ -191,7 +194,9 @@ async def recover_formula(
 
     previous: bytes | None = None
     for view in range(2):
-        crop = crop_pdf(box=[round(v * 1000) for v in box], ordinal=0, view=view)
+        crop = await asyncio.to_thread(
+            crop_pdf, box=[round(v * 1000) for v in box], ordinal=0, view=view
+        )
         if crop is None:
             break
         data = crop.read_bytes()
@@ -235,6 +240,10 @@ async def _recover(
     is_formula = block.type in _FORMULAS
     original = block.content
     if block.bbox is None:
+        if is_formula and formula_is_suspicious(original):
+            block.metadata["verification_original"] = original
+            block.content = f"[Unclear formula; {_location(page, block)}; zoom if possible.]"
+        block.metadata["verification"] = {"status": "unresolved", "reason": "missing bounds"}
         diagnostics.append(
             {
                 "page_idx": page.page_idx,
@@ -242,6 +251,7 @@ async def _recover(
                 "status": "unresolved",
                 "region": index,
                 "reason": "missing bounds",
+                "initial": original,
             }
         )
         return
@@ -250,7 +260,9 @@ async def _recover(
     with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
         for view in range(2 if crop_pdf else 1):
             if crop_pdf:
-                crop = crop_pdf(box=[round(v * 1000) for v in block.bbox], ordinal=index, view=view)
+                crop = await asyncio.to_thread(
+                    crop_pdf, box=[round(v * 1000) for v in block.bbox], ordinal=index, view=view
+                )
                 if crop is None:
                     break
             else:
@@ -329,7 +341,20 @@ async def _recover(
             )
         )
     )
+    confirmed = bool(
+        candidate
+        and valid_original
+        and not expected
+        and (
+            canonical_math(candidate) == canonical_math(original)
+            if is_formula
+            else [u[0] for u in _units(candidate)] == [u[0] for u in _units(original)]
+            if inline_math
+            else _agree(candidate, original)
+        )
+    )
     accepted = bool(candidate and ((expected and matches) or (not expected and not valid_original)))
+    status = "recovered" if accepted else "confirmed" if confirmed else "unresolved"
     if accepted:
         block.metadata["verification_original"] = original
         block.content = cast(str, candidate)
@@ -338,7 +363,7 @@ async def _recover(
         block.metadata["verification_original"] = original
         block.content = f"[Unclear {kind}; {_location(page, block)}; zoom if possible.]"
     block.metadata["verification"] = {
-        "status": "recovered" if accepted else "unresolved",
+        "status": status,
         "independent": expected,
         "targeted": candidate,
     }
@@ -346,7 +371,7 @@ async def _recover(
         {
             "page_idx": page.page_idx,
             "stage": stage,
-            "status": "recovered" if accepted else "unresolved",
+            "status": status,
             "region": index,
             "initial": original,
             "independent": expected,
@@ -408,6 +433,7 @@ async def verify_page(
             indices.add(owners[min(i1, len(owners) - 1)])
         for index in indices:
             differences.setdefault(index, []).extend(item[1] for item in right[j1:j2])
+    recoveries = []
     for index in sorted(differences):
         block = page.blocks[index]
         if str(block.metadata.get("source", "")).startswith("native"):
@@ -441,18 +467,24 @@ async def verify_page(
                         c, d = c + max(start - a, 0), c + min(end - a, b - a)
                     selected.extend(right[j][1] for j in range(c, d))
                 expected = " ".join(selected)
-        await _recover(
-            pipeline,
-            page,
-            block,
-            index,
-            region_imagepath or imagepath,
-            diagnostics,
-            crop_pdf,
-            "advanced_region",
-            expected or None,
-            inline_math=inline_math,
+        recoveries.append(
+            _recover(
+                pipeline,
+                page,
+                block,
+                index,
+                region_imagepath or imagepath,
+                diagnostics,
+                crop_pdf,
+                "advanced_region",
+                expected or None,
+                inline_math=inline_math,
+            )
         )
+    if recoveries:
+        from .pipeline import _gather_cancel
+
+        await _gather_cancel(recoveries)
     diagnostics.append(
         {
             "page_idx": page.page_idx,
@@ -472,16 +504,35 @@ async def verify_suspicious_regions(
     crop_pdf: Callable[..., Path | None] | None = None,
 ) -> Page:
     """Recover malformed content locally; ordinary text does not trigger a reread."""
+    recoveries = []
     for index, block in enumerate(page.blocks):
         if block.type in _IGNORED or str(block.metadata.get("source", "")).startswith("native"):
             continue
+        inline_math = block.type not in _FORMULAS and bool(_MATH.search(block.content))
+        resolution_risk = bool(block.metadata.get("resolution_risk")) and (
+            block.type in _FORMULAS or inline_math
+        )
         suspicious = (
             formula_is_suspicious(block.content)
             if block.type in _FORMULAS
             else any(s in block.content for s in ("�", "???"))
         )
-        if suspicious:
-            await _recover(
-                pipeline, page, block, index, imagepath, diagnostics, crop_pdf, "standard_region"
+        if suspicious or resolution_risk:
+            recoveries.append(
+                _recover(
+                    pipeline,
+                    page,
+                    block,
+                    index,
+                    imagepath,
+                    diagnostics,
+                    crop_pdf,
+                    "standard_region",
+                    inline_math=inline_math and resolution_risk,
+                )
             )
+    if recoveries:
+        from .pipeline import _gather_cancel
+
+        await _gather_cancel(recoveries)
     return page

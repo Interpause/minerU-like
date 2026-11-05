@@ -226,3 +226,80 @@ async def test_cancellation_propagates(context: Path) -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await verify_page(Cancelled(), Page(0, [Block("text", "text")]), context, [])
+
+
+@pytest.mark.asyncio
+async def test_resolution_risk_confirms_matching_formula(context: Path) -> None:
+    page = Page(
+        0,
+        [
+            Block(
+                "equation",
+                "$x+y$",
+                bbox=(0, 0, 1, 1),
+                metadata={"resolution_risk": {"minimum_symbol_pixels": 5}},
+            )
+        ],
+    )
+    await verify_suspicious_regions(Pipeline(region="$$x+y$$"), page, context, [])
+    assert page.blocks[0].content == "$x+y$"
+    assert page.blocks[0].metadata["verification"]["status"] == "confirmed"
+    page.blocks[0].metadata.pop("verification")
+    await verify_suspicious_regions(Pipeline(region="$$x-y$$"), page, context, [])
+    assert page.blocks[0].content == "$x+y$"
+    assert page.blocks[0].metadata["verification"]["status"] == "unresolved"
+
+
+@pytest.mark.asyncio
+async def test_unsafe_or_missing_crop_retains_no_broken_formula(context: Path) -> None:
+    for bbox in (None, (0.0, 0.0, 1.0, 1.0)):
+        page = Page(0, [Block("equation", "x_{", bbox=bbox)])
+        await verify_suspicious_regions(Pipeline(), page, context, [], lambda **kwargs: None)
+        assert page.blocks[0].content.startswith("[Unclear formula;")
+
+
+@pytest.mark.asyncio
+async def test_html_and_markdown_table_cells_agree(context: Path) -> None:
+    page = Page(0, [Block("table", "<table><tr><td>North</td><td>53</td></tr></table>")])
+    pipeline = Pipeline("| North | 53 |")
+    diagnostics: list[Diagnostic] = []
+    await verify_page(pipeline, page, context, diagnostics)
+    assert diagnostics[-1]["status"] == "agreed"
+    assert pipeline.stages == ["advanced_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_independent_formulas_overlap(context: Path) -> None:
+    import asyncio
+
+    class Overlapping(Pipeline):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = 0
+            self.both = asyncio.Event()
+
+        async def _infer_valid(
+            self,
+            images: list[Path],
+            prompt: str,
+            validator: Callable[[str], T],
+            diagnostics: list[Diagnostic],
+            page_idx: int,
+            stage: str,
+            recovery: Callable[[], Path] | None = None,
+        ) -> T:
+            self.entered += 1
+            if self.entered == 2:
+                self.both.set()
+            await asyncio.wait_for(self.both.wait(), timeout=1)
+            return validator("$$x+y$$")
+
+    page = Page(
+        0,
+        [
+            Block("equation", "x_{", bbox=(0, 0, 0.5, 0.5)),
+            Block("equation", "x_{", bbox=(0.5, 0.5, 1, 1)),
+        ],
+    )
+    await verify_suspicious_regions(Overlapping(), page, context, [])
+    assert [block.content for block in page.blocks] == ["$$x+y$$", "$$x+y$$"]
