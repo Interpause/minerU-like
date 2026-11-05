@@ -8,8 +8,9 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 if TYPE_CHECKING:
     from pytest import CollectReport, TestReport
@@ -51,13 +52,22 @@ def configure(args: argparse.Namespace) -> dict[str, str]:
             TEST_PLUGIN_ROOT=str(plugin), TYPESCRIPT_MODULE=str(ts), FFLATE_MODULE=str(fflate)
         )
     if args.all or args.cwebp_tests:
-        candidate = args.cwebp or shutil.which("cwebp")
+        candidate = args.cwebp
+        config = Path(args.config).expanduser().resolve()
+        if not candidate and config.is_file():
+            from mineru_like.config import load_settings
+
+            configured = load_settings(config).compression.cwebp_binary
+            candidate = str(configured) if configured is not None else None
+        candidate = candidate or shutil.which("cwebp")
         if not candidate:
             matches = sorted((ROOT / "data/tools").glob("**/cwebp"))
             candidate = str(matches[0]) if matches else None
         binary = executable(candidate)
         if not binary:
-            raise ValueError("cwebp is required; supply --cwebp or put it on PATH")
+            raise ValueError(
+                "cwebp is required; set compression.cwebp_binary in --config, supply --cwebp, or put it on PATH"
+            )
         env["MINERU_TEST_CWEBP"] = binary
     if args.all or args.flatpak:
         flatpak = executable("flatpak")
@@ -81,6 +91,27 @@ def configure(args: argparse.Namespace) -> dict[str, str]:
     return env
 
 
+class Tee:
+    """Keep pytest output visible while retaining the complete result transcript."""
+
+    def __init__(self, terminal: TextIO, log: TextIO) -> None:
+        self.terminal = terminal
+        self.log = log
+
+    def isatty(self) -> bool:
+        return False
+
+    def write(self, text: str) -> int:
+        self.terminal.write(text)
+        self.log.write(text)
+        self.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        self.terminal.flush()
+        self.log.flush()
+
+
 class NoSkips:
     def __init__(self) -> None:
         self.skips: list[str] = []
@@ -100,14 +131,36 @@ def main(argv: list[str] | None = None) -> int:
         "--all", action="store_true", help="enable every integration and reject skips"
     )
     parser.add_argument("--plugin", action="store_true")
-    parser.add_argument("--plugin-root", help="path to an llm-for-zotero checkout")
-    parser.add_argument("--node-modules", default=str(ROOT / "data/test-tools/node_modules"))
+    parser.add_argument(
+        "--plugin-root",
+        default="data/llm-for-zotero",
+        help="plugin checkout (default: data/llm-for-zotero)",
+    )
+    parser.add_argument("--node-modules", default="data/test-tools/node_modules")
     parser.add_argument("--cwebp-tests", action="store_true")
     parser.add_argument("--cwebp", help="path to cwebp; used with --all or --cwebp-tests")
     parser.add_argument("--flatpak", action="store_true")
     parser.add_argument("--live", action="store_true")
-    parser.add_argument("--config", help="config TOML for live inference")
+    parser.add_argument(
+        "--config",
+        default="config.local.toml",
+        help="inference and encoder config (default: config.local.toml)",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=Path("data/test-results.log"),
+        help="console transcript, overwritten per run (default: data/test-results.log)",
+    )
     args, pytest_args = parser.parse_known_args(argv)
+    args.log_file.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Test log: {args.log_file.resolve()}", flush=True)
+    with args.log_file.open("w", encoding="utf-8") as log:
+        with redirect_stdout(Tee(sys.stdout, log)), redirect_stderr(Tee(sys.stderr, log)):
+            return run(parser, args, pytest_args)
+
+
+def run(parser: argparse.ArgumentParser, args: argparse.Namespace, pytest_args: list[str]) -> int:
     try:
         os.environ.update(configure(args))
     except ValueError as exc:

@@ -5,7 +5,7 @@ Install the locked development dependencies and run the usual local checks from 
 ```sh
 uv sync --locked --group dev
 uv run --locked ruff check .
-uv run --locked pytest -q
+uv run --locked python scripts/run_tests.py
 uv build
 ```
 
