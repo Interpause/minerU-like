@@ -38,6 +38,7 @@ kv_cache = "bf16"
 context_size = 32768 # Per slot; total allocation is context_size * parallel_slots.
 max_tokens = 16384
 image_min_tokens = 196 # Ovis patch16/merge2: 196 tokens correspond to 448 x 448 pixels.
+# This ceiling can downscale Advanced images depending on area and aspect ratio.
 image_max_tokens = 8192
 # Omit image_max_tokens or set -1 to use the backend/model default.
 parallel_slots = 4 # Concurrent inference slots.

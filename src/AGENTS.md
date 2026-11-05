@@ -15,7 +15,7 @@ This file supplements the [root guidance](../AGENTS.md) for `src/`.
 - Prefer minimal comments. Explain surprising constraints when names and structure
   cannot carry the reasoning; avoid narrating obvious code or duplicating types.
 - Use distinct error categories at boundaries. Keep malformed model output,
-  transcription uncertainty, invalid input and infrastructure failure separate.
+  unresolved transcription, invalid input and infrastructure failure separate.
   Catch exceptions where a real recovery or translation is possible; do not hide
   backend errors behind successful-looking fallback output.
 - Keep blocking rendering and substantial CPU work off the event loop. Preserve
@@ -36,7 +36,7 @@ and omissions rather than treating one wrapper as universal authority.
   and [third-party notices](../THIRD_PARTY_NOTICES.md).
 - Retain raw output, finish reason and recovery provenance before transformations.
   Cleanup cannot turn truncation into completeness. Parse valid structured output
-  before attempting repair; keep recovered content explicitly distinguished.
+  before attempting repair; retain recovery provenance in diagnostics.
 - Submit unrelated page/crop tasks independently. Multiple images within a task
   need support from its documented contract, such as related-page reconstruction.
 - Check executable/API capability instead of rejecting an arbitrary runtime build
@@ -45,14 +45,14 @@ and omissions rather than treating one wrapper as universal authority.
 
 ## Document correctness
 
-- PDF text is supporting evidence, not authoritative reading order or semantics.
-  Read PDF equations visually even for digital-born files; never trust a scanned
-  document's existing OCR layer as transcription evidence.
+- Use PDF glyph positions only as geometry hints, never as transcription or
+  equation truth. Read PDF equations visually even for digital-born files.
 - Preserve native equation structure only where the source format and adapter
   support it. Object counts and successful conversion do not establish fidelity.
-- Prefer localized recovery supported by better evidence. Preserve useful content,
-  source images and labeled uncertain transcriptions when quality checks remain
-  unresolved; do not discard a document for a minor discrepancy.
+- Prefer localized recovery supported by better evidence. For an unresolved
+  formula, use a concise general placeholder without guesses or exact coordinates;
+  retain detailed evidence in sidecar diagnostics and logs. Do not turn temporary
+  equation crops into delivered figures or discard a document for a minor discrepancy.
 - Preserve page order, source provenance, non-table content and original fragments
   through table reconstruction. Unsupported or uncertain merges must not destroy
   independent results.

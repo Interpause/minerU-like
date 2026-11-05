@@ -12,7 +12,8 @@ priority over latency; deployment targets a 6 GB GPU with useful headroom.
 - Verify relevant upstream code and model contracts rather than infer behavior
   from names, summaries or successful smoke tests.
 - Separate actual implementation, observed test results, estimates and unverified
-  behavior. Make uncertainty visible rather than manufacture confidence.
+  behavior. Do not manufacture confidence; follow the parsing guide for unresolved
+  content and diagnostic evidence.
 - Discuss new runtime dependencies and dependency replacements before adopting
   them. Routine development tooling may proceed within the agreed task scope.
 - Any history rewrite requires explicit permission, including amendments to

@@ -1,6 +1,6 @@
 # Remaining work
 
-Status for **0.2.1**; the `0.1.0` tag remains unchanged. This list distinguishes missing implementation from implemented behavior that still needs real-world validation. Items are not a promise that every optional extension will be added. Completed capabilities and release evidence are recorded in [CHANGELOG.md](CHANGELOG.md).
+Current remaining work; historical release evidence is retained in the changelog. This list distinguishes missing implementation from implemented behavior that still needs real-world validation. Items are not a promise that every optional extension will be added. Completed capabilities and release evidence are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Deployment validation — highest priority
 
@@ -27,7 +27,7 @@ Status for **0.2.1**; the `0.1.0` tag remains unchanged. This list distinguishes
 - [ ] Add representative real DOC, PPT, XLS, and OFD fixtures. Their adapters exist, but generated modern-format tests do not validate the legacy/native import paths.
 - [ ] Broaden real PNG/JPEG/WebP/GIF/BMP/TIFF/JP2 input coverage, including unusual encodings, transparency, multipage scans, animated/composited frames, and EXIF orientation.
 - [ ] Validate digital, scanned, corrupted/invisible OCR, and mixed PDFs on a small reproducible corpus: two-column order, difficult middle pages, tiny text, mathematical fonts, Unicode, blank/degraded pages, and raster/vector figures.
-- [ ] Validate Standard versus Advanced with a representative model corpus: formula selection, higher-resolution crops, Markdown disagreements, recovery acceptance/rejection, and call counts. A simple live CPU PDF passes both tiers; this does not establish difficult-page quality. Test adversarial same-model agreement as well as false disagreement.
+- [ ] Validate Standard versus Advanced with a representative model corpus: localized recovery, higher-resolution crops, Markdown disagreements, recovery acceptance/rejection, and call counts. A simple live CPU PDF passes both tiers; this does not establish difficult-page quality. Test adversarial same-model agreement as well as false disagreement.
 - [ ] Run real two-/three-page table inference and longer continuations; current reconstruction tests primarily control the model output. Measure false merges and missed continuations under the permissive either-page candidate rule, including truncated-but-usable inputs versus targeted recovery.
 - [ ] Validate real Office charts, SmartArt, grouped/floating objects, equations, complex slides, hidden sheets, print ranges, large-sheet regions, and missing fonts through the complete native + renderer + Ovis path. A successful plain DOCX conversion is not sufficient evidence.
 - [ ] Test live external inference endpoints with one/two images, model aliases, authentication, timeouts, disconnects, contention, and cancellation while confirming that the external service survives.

@@ -2,11 +2,11 @@
 
 ## Policy
 
-Every PDF/image page receives a low-resolution layout request using the supplied Ovis task template. PDF text elements are supporting evidence, not authoritative reading order or semantics. Equations are read visually even in digital-born PDFs; clean prose can support region-level comparisons, while scans and forced OCR never trust existing text layers. Native OMML/MathML equations are retained where DocVortex supports their structure, with missing-equation inventory and generated conversion tests. Neither counts nor successful conversion prove general semantic fidelity.
+Standard makes one full-page structured extraction request for each PDF/image page. Advanced adds one full-page Markdown comparison and localized recovery where evidence calls for it; it does not routinely reread every formula or text region. PDF glyph positions can guide crop geometry only: PDF text is not equation truth or transcription evidence. Equations are read visually even in digital-born PDFs. Native OMML/MathML equations are retained where DocVortex supports their structure; inventory counts and successful conversion do not prove general semantic fidelity.
 
-The 18 bundled task prompts follow the shared model examples and Spaces contracts. Independent pages use independent requests; the documented two-image task is reserved for related-page reconstruction. Raw text, finish reason and usage survive before cleanup. Markdown repeated-tail cleanup retains raw and cleaned output with a change flag. Valid structured JSON is parsed unchanged; damaged responses can retain validated complete records and table fragments as explicitly incomplete output. A token-limit finish never becomes a claim of completeness.
+Structured requests use JSON schemas as an expected backend capability, without capability probing, negotiation or fallback. Raw LaTeX recognition uses unconstrained output, the official sampling temperature of zero and thinking disabled. Independent pages use independent requests; the documented two-image task is reserved for related-page reconstruction. Raw text, finish reason and usage survive before cleanup. Valid structured JSON is parsed unchanged; damaged responses can retain validated complete records and table fragments as explicitly incomplete output. A token-limit finish never becomes a claim of completeness.
 
-Unresolved quality disagreements retain source images alongside labeled uncertain text rather than fail the whole document. Malformed structured extraction falls back to Markdown and the page image. Backend/input failures remain errors. Source-region recovery uses higher effective resolution; generated boundary coordinate 1000 is accepted and recorded, while reversed, empty or out-of-range boxes trigger recovery.
+Recovery crops retain bounded context and effective pixel padding while guarding neighboring regions. Their effective backend resolution may be unknown. Each region receives at most two distinct views, with no identical retries. If a formula remains unreadable, delivery uses a concise general placeholder such as `[Unclear formula; p1, approx. middle-right; zoom if possible.]`, without guessed content or exact coordinates. Detailed recovery evidence belongs in sidecar diagnostics and logs; the unchanged plugin does not provide a warning UI for it. Backend and input failures remain errors.
 
 PDF and image parsing uses PDFium/Pillow plus Ovis. Images include PNG, JPEG, WebP, GIF, BMP, TIFF and JP2; multi-frame inputs retain their frames. Native conversion uses DocVortex 0.6.13 for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV and TSV. Native equations are retained when conversion succeeds; extracted raster content receives visual enrichment. Optional LibreOffice rendering supplies missing or questionable Office visual evidence. Extracted SVG assets are rasterized for inference while retaining their originals; inline SVG in HTML/EPUB is currently rejected because its preservation through native conversion cannot be verified.
 
@@ -16,15 +16,14 @@ The plugin sends tier and OCR mode. Its legacy effort and image-analysis control
 
 | Runtime behavior | Standard | Advanced |
 | --- | --- | --- |
-| Brief visual assessment | Every visual page | Every visual page |
+| Full-page extraction | Structured extraction | Structured extraction plus Markdown comparison |
 | Extraction source render | 200 DPI, at most 2880px long edge | 300 DPI, at most 4096px long edge |
-| Dedicated formula recognition | Small or suspicious formulas; otherwise reuse extraction | Every identified inline/display formula |
-| Model-based verification | Suspicious regions only | Independent full-page Markdown plus targeted disagreement recovery |
+| Localized recovery | When evidence warrants it | When evidence or comparison warrants it |
 | Cross-page tables | Adjacent candidates and backward recursive reconstruction | Same reconstruction with higher-resolution page evidence |
 | Meaningful figure descriptions | Enabled | Enabled |
 | Source SVG recovery and compression | Enabled | Enabled |
 
-Both tiers keep the same model image-token/context limits. Higher-resolution source-region crops protect small text where whole-page preprocessing would discard detail. Advanced's independent pass is a separate generation from the same model, not an independent ground truth. Unresolved material disagreements are labeled with source-image evidence. Either adjacent page can nominate a table candidate through layout or transcription hints. Independent page parses feed the two-image reconstruction task; longer runs merge backwards with re-rendered intermediate pages. Heuristic skips and explicit model negatives are distinct. Ambiguous or unsupported merges retain the independent source fragments. Native documents continue to support Standard only.
+Both tiers keep the same model image-token/context limits. Higher-resolution source-region crops can protect small text where whole-page preprocessing would discard detail. Advanced's comparison is a separate generation from the same model, not independent ground truth. Either adjacent page can nominate a table candidate through layout or transcription hints. Independent page parses feed the two-image reconstruction task; longer runs merge backwards with re-rendered intermediate pages. Heuristic skips and explicit model negatives are distinct. Ambiguous or unsupported merges retain the independent source fragments. Native documents continue to support Standard only.
 
 ### Headless LibreOffice
 
@@ -48,6 +47,8 @@ uv run --locked mineru-like doctor --config config.local.toml --smoke sample.doc
 The smoke command explicitly performs a conversion and reports its output path. Flatpak execution may require running this check on the deployment host; mocked command/lifecycle tests do not establish that the host installation works.
 
 ### Delivery assets
+
+Equation crops are temporary inference inputs: recognized LaTeX belongs at the original inline or display position. Delivered image assets represent actual graphics, not recovery crops. Prefer an HTML table when it preserves the complete source table without semantic loss.
 
 Source vector figures are exported through PyMuPDF with text retained as text, including common fonts. The exporter removes unrelated objects/resources and compares candidates against independent PDFium renders on white and black backgrounds. Uncertain fonts, geometry, clipping or isolation retain the raster. Scans are never traced into vectors. An isolated embedded raster can retain its original compressed bytes when its footprint and independent rendering agree.
 
