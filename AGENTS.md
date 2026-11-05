@@ -80,7 +80,7 @@ uv build
 ```
 
 Use Ruff to format touched Python files, following `pyproject.toml`. See the
-testing guide for integrations and the full-suite runner. Keep changing runtime
+testing guide for integrations and the full-suite runner. Reserve distribution builds for packaging-sensitive changes or the final release pass; see [check selection and build timing](docs/DEVELOPMENT.md#build-and-review). Keep changing runtime
 defaults and validation results in their authoritative files, not in this guide.
 
 Owned Python source, tests and scripts have comprehensive annotations. Preserve

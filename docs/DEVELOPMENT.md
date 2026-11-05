@@ -33,6 +33,8 @@ The dev group provides pytest and pytest-asyncio, Ruff, ty, and fixture generato
 
 ## Build and review
 
+Choose checks for the affected behavior. Documentation-only edits usually need diff and link review; a small isolated code fix usually needs focused tests and lint for the touched Python. Broaden testing for changes across components, persistence or lifecycle behavior. Distribution builds are unnecessary for ordinary documentation, test-only and isolated implementation edits unless they affect packaging. Run them for dependency/build metadata, package layout/data, entry-point changes or release preparation. During a larger task, normally defer the build and artifact inspection to the final integrated pass; repeat earlier only to investigate a packaging issue, or later if build inputs change.
+
 `uv build` creates a source distribution and wheel under `dist/`; unlike `uv run --locked`, the build command may resolve its isolated build requirements. After building, inspect the specific resulting wheel (replace the placeholder with its filename):
 
 ```sh
