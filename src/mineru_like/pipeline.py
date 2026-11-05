@@ -1249,7 +1249,7 @@ class Pipeline:
                 x0, y0, x1, y1 = block.bbox
                 proposed = []
                 for candidate in captions:
-                    if candidate["category"] != "table":
+                    if candidate["category"] not in {"table", "display_formula", "inline_formula"}:
                         continue
                     a, b, c, d = [v / 1000 for v in candidate["bbox"]]
                     overlap = max(0, min(x1, c) - max(x0, a)) * max(0, min(y1, d) - max(y0, b))
@@ -1270,30 +1270,42 @@ class Pipeline:
                     )
                 except ValueError:
                     continue
-                tables = [item for item in regions if item["category"] == "table"]
+                semantic = [item for item in regions if item["category"] == proposed[0]["category"]]
                 if (
-                    len(tables) != 1
+                    len(semantic) != 1
                     or len(regions) != 1
                     or not await asyncio.to_thread(_semantic_regions, regions, image_path)
                 ):
                     continue
-                if _table_signature(tables[0]["content"]) != _table_signature(
-                    proposed[0]["content"]
-                ):
+                if proposed[0]["category"] == "table":
+                    agrees = _table_signature(semantic[0]["content"]) == _table_signature(
+                        proposed[0]["content"]
+                    )
+                else:
+                    from .verification import canonical_math
+
+                    agrees = canonical_math(semantic[0]["content"]) == canonical_math(
+                        proposed[0]["content"]
+                    )
+                if not agrees:
                     diagnostics.append(
                         {
                             "page_idx": idx,
                             "stage": "graphic_structure",
                             "status": "unresolved",
-                            "reason": "table structure differs; source graphic retained",
+                            "reason": "structural readings differ; source graphic retained",
                         }
                     )
                     continue
                 old = block.image_source
-                block.type = "table"
-                block.content = tables[0]["content"]
+                block.type = {"display_formula": "equation"}.get(
+                    proposed[0]["category"], proposed[0]["category"]
+                )
+                block.content = semantic[0]["content"]
                 block.image_source = None
-                block.metadata.update(category="table", representation="verified_table")
+                block.metadata.update(
+                    category=proposed[0]["category"], representation="corroborated_structure"
+                )
                 diagnostics.append(
                     {
                         "page_idx": idx,

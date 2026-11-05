@@ -100,13 +100,18 @@ def test_pixel_risk_uses_effective_dimensions_and_crop_gain(
 
 
 @pytest.mark.parametrize("span_agrees", [True, False])
-async def test_graphic_table_requires_matching_complete_structure(
-    tmp_path: Path, span_agrees: bool
+@pytest.mark.parametrize("category", ["table", "display_formula"])
+async def test_graphic_requires_matching_complete_structure(
+    tmp_path: Path, span_agrees: bool, category: str
 ) -> None:
     source = tmp_path / "table.png"
     Image.new("RGB", (100, 100), "black").save(source)
     table = '<table><tr><th colspan="2">Value</th></tr><tr><td>1</td><td>2</td></tr></table>'
-    other = table if span_agrees else table.replace('colspan="2"', 'colspan="1"')
+    if category == "display_formula":
+        table = "x^2"
+    other = (
+        table if span_agrees else table.replace('colspan="2"', 'colspan="1"').replace("x^2", "x_2")
+    )
 
     def records(category: str, content: str) -> str:
         return json.dumps([{"bbox": [0, 0, 999, 999], "category": category, "content": content}])
@@ -126,10 +131,10 @@ async def test_graphic_table_requires_matching_complete_structure(
             assert response_schema is not None
             self.calls.append(prompt)
             if prompt == (PROMPTS / "figure_captioning.txt").read_text():
-                return records("table", table)
+                return records(category, table)
             if images[0].name.startswith("page-"):
                 return records("image", '<img src="images/bbox_0_0_999_999.jpg"/>')
-            return records("table", other)
+            return records(category, other)
 
     runtime = Runtime()
     result = await Pipeline(Settings(), runtime).parse(
@@ -137,7 +142,7 @@ async def test_graphic_table_requires_matching_complete_structure(
     )
     assert len(runtime.calls) == 3
     if span_agrees:
-        assert result.pages[0].blocks[0].type == "table"
+        assert result.pages[0].blocks[0].type == ("table" if category == "table" else "equation")
         assert not result.assets
         assert result.pages[0].blocks[0].content == table
     else:
