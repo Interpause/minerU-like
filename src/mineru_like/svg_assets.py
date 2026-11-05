@@ -1,5 +1,7 @@
 """Recover isolated, validated delivery figures from their source PDFs."""
 
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
@@ -8,25 +10,31 @@ import re
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
+from typing import cast, overload
 
 import pymupdf
 import pypdfium2 as pdfium
 import resvg_py
 from PIL import Image
-from svgelements import Matrix, Point
-from svgelements import Path as SVGPath
+from svgelements import Matrix, Point  # ty: ignore[import-not-found]
+from svgelements import Path as SVGPath  # ty: ignore[import-not-found]
 
 from .compression import _replace
+from .config import Settings
 from .fidelity import compare
+from .result import DocumentResult
 
 log = logging.getLogger(__name__)
 SVG = "{http://www.w3.org/2000/svg}"
 XLINK = "{http://www.w3.org/1999/xlink}"
 
 
-def _bbox_points(points, matrix):
+def _bbox_points(
+    points: Sequence[tuple[float, float]], matrix: Matrix
+) -> tuple[float, float, float, float]:
     mapped = [matrix.point_in_matrix_space(Point(x, y)) for x, y in points]
     return (
         min(p.x for p in mapped),
@@ -36,7 +44,7 @@ def _bbox_points(points, matrix):
     )
 
 
-def _intersects(box, viewport):
+def _intersects(box: Sequence[float], viewport: tuple[float, float, float, float]) -> bool:
     return (
         box[0] < viewport[2]
         and box[2] > viewport[0]
@@ -45,7 +53,7 @@ def _intersects(box, viewport):
     )
 
 
-def _inside(box, viewport):
+def _inside(box: Sequence[float], viewport: tuple[float, float, float, float]) -> bool:
     return (
         box[0] >= viewport[0]
         and box[1] >= viewport[1]
@@ -54,7 +62,7 @@ def _inside(box, viewport):
     )
 
 
-def _geometry(node, matrix):
+def _geometry(node: ET.Element, matrix: Matrix) -> tuple[float, float, float, float] | None:
     tag = node.tag.split("}")[-1]
     if tag == "path":
         path = SVGPath(node.attrib["d"]) * matrix
@@ -91,13 +99,13 @@ def _geometry(node, matrix):
     raise ValueError(f"unsupported SVG element: {tag}")
 
 
-def _isolate(svg, width, height):
+def _isolate(svg: str, width: float, height: float) -> bytes:
     root = ET.fromstring(svg)
     viewport = (0, 0, width, height)
     defs = root.find(SVG + "defs")
     paint_count = 0
 
-    def walk(parent, matrix):
+    def walk(parent: ET.Element, matrix: Matrix) -> None:
         nonlocal paint_count
         for node in list(parent):
             tag = node.tag.split("}")[-1]
@@ -165,7 +173,9 @@ def _isolate(svg, width, height):
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def _raster_source(document, page, region):
+def _raster_source(
+    document: pymupdf.Document, page: pymupdf.Page, region: pymupdf.Rect
+) -> tuple[bytes, str] | None:
     """Extract a sole, untransformed embedded image with no overlapping paint."""
     images = [
         item
@@ -176,7 +186,13 @@ def _raster_source(document, page, region):
         return None
     item = images[0]
     box = pymupdf.Rect(item["bbox"])
-    if max(abs(a - b) for a, b in zip(box, region, strict=True)) > 1:
+    if (
+        max(
+            abs(a - b)
+            for a, b in zip(cast(Sequence[float], box), cast(Sequence[float], region), strict=True)
+        )
+        > 1
+    ):
         return None
     a, b, c, d, _, _ = item["transform"]
     if a <= 0 or d <= 0 or abs(b) > 1e-6 or abs(c) > 1e-6 or not item.get("xref"):
@@ -195,8 +211,14 @@ def _raster_source(document, page, region):
     return data, ".jpg" if extracted["ext"] == "jpeg" else ".png"
 
 
-def _replace_references(result, old, new):
-    def replace(text):
+def _replace_references(result: DocumentResult, old: str, new: str) -> None:
+    @overload
+    def replace(text: str) -> str: ...
+
+    @overload
+    def replace(text: None) -> None: ...
+
+    def replace(text: str | None) -> str | None:
         if not text:
             return text
         text = _replace(text, old, new)
@@ -217,7 +239,7 @@ def _replace_references(result, old, new):
     result.markdown_override = replace(result.markdown_override)
 
 
-def _publish(result, old, data, extension, workdir):
+def _publish(result: DocumentResult, old: str, data: bytes, extension: str, workdir: Path) -> str:
     base = str(PurePosixPath(old).with_suffix(""))
     name = base + extension
     suffix = 1
@@ -236,7 +258,13 @@ def _publish(result, old, data, extension, workdir):
     return name
 
 
-def _render_pdfium(path, page_index, bbox, scale, background=(255, 255, 255, 255)):
+def _render_pdfium(
+    path: str | Path,
+    page_index: int,
+    bbox: Sequence[float],
+    scale: float,
+    background: tuple[int, int, int, int] = (255, 255, 255, 255),
+) -> Image.Image:
     from .pipeline import PDF_LOCK
 
     with PDF_LOCK:
@@ -257,7 +285,13 @@ def _render_pdfium(path, page_index, bbox, scale, background=(255, 255, 255, 255
             source_doc.close()
 
 
-def _run(result, input_pdf, settings, workdir, cancelled):
+def _run(
+    result: DocumentResult,
+    input_pdf: Path,
+    settings: Settings,
+    workdir: Path,
+    cancelled: threading.Event,
+) -> None:
     if not settings.svg.enabled:
         return
     workdir = Path(workdir)
@@ -402,7 +436,9 @@ def _run(result, input_pdf, settings, workdir, cancelled):
                     )
 
 
-async def improve_pdf_assets(result, input_pdf, settings, workdir) -> None:
+async def improve_pdf_assets(
+    result: DocumentResult, input_pdf: Path, settings: Settings, workdir: Path
+) -> None:
     cancelled = threading.Event()
     worker = asyncio.create_task(
         asyncio.to_thread(_run, result, input_pdf, settings, workdir, cancelled)

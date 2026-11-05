@@ -1,26 +1,33 @@
 """Conservative right-to-left cross-page table reconstruction."""
 
+from __future__ import annotations
+
 import asyncio
 import html
 import json
 import re
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any, cast
 
 from PIL import Image
+
+from .contracts import Inference
+from .result import Block, DocumentResult, Page
 
 PROMPT = Path(__file__).parent / "prompts" / "crosspage_table.txt"
 
 
-def _cells(value):
+def _cells(value: str) -> list[str]:
     return [
         re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", cell))).strip()
         for cell in re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", value, re.I | re.S)
     ]
 
 
-def _validated(raw, fragments):
+def _validated(raw: str, fragments: list[str]) -> str | None:
     value = json.loads(raw)
     if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
         raise ValueError("Expected a single cross-page table result")
@@ -48,7 +55,7 @@ def _validated(raw, fragments):
             re.search(r"<tr\b[^>]*>(.*?)</tr\s*>", fragment, re.I | re.S) for fragment in fragments
         ]
         if all(rows):
-            first, second = (_cells(row.group(0)) for row in rows)
+            first, second = (_cells(cast(re.Match[str], row).group(0)) for row in rows)
             if first and first == second and all(first):
                 allowed.append(cells_by_fragment[0] + cells_by_fragment[1][len(first) :])
     if not any(source) or target not in allowed:
@@ -76,11 +83,11 @@ class _TableSanitizer(HTMLParser):
         "sub",
     }
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts = []
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag not in self.allowed:
             return
         safe = "".join(
@@ -90,15 +97,15 @@ class _TableSanitizer(HTMLParser):
         )
         self.parts.append(f"<{tag}{safe}>")
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag in self.allowed and tag != "br":
             self.parts.append(f"</{tag}>")
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         self.parts.append(html.escape(data))
 
 
-def _page_representation(page, table_index, merged):
+def _page_representation(page: Page, table_index: int, merged: str) -> str:
     sections = []
     for index, block in enumerate(page.blocks):
         if index == table_index:
@@ -110,7 +117,7 @@ def _page_representation(page, table_index, merged):
     return "<html><body>" + "".join(sections) + "</body></html>"
 
 
-def _render_table(value, output):
+def _render_table(value: str, output: Path) -> None:
     import docvortex
     import pypdfium2 as pdfium
 
@@ -162,27 +169,27 @@ def _render_table(value, output):
         pdf.close()
 
 
-def _render_locked(value, output):
+def _render_locked(value: str, output: Path) -> None:
     from .pipeline import PDF_LOCK
 
     with PDF_LOCK:
         _render_table(value, output)
 
 
-async def render_table_html(value, output):
+async def render_table_html(value: str, output: Path) -> None:
     """Render sanitized table HTML using DocVortex and stitch every PDF page."""
     await asyncio.to_thread(_render_locked, value, output)
 
 
-def _table_blocks(page):
+def _table_blocks(page: Page) -> list[tuple[int, Block]]:
     return [(n, block) for n, block in enumerate(page.blocks) if block.type == "table"]
 
 
-def _has_hint(page):
+def _has_hint(page: Page) -> bool:
     if _table_blocks(page):
         return True
 
-    def evidence(value):
+    def evidence(value: Any) -> bool:
         if isinstance(value, dict):
             return any(
                 (
@@ -208,7 +215,7 @@ def _has_hint(page):
     )
 
 
-def _markdown(page, replacements, page_no):
+def _markdown(page: Page, replacements: dict[tuple[int, int], str], page_no: int) -> str:
     text = "\n\n".join(
         replacements.get((page.page_idx, n), block.markdown())
         for n, block in enumerate(page.blocks)
@@ -219,8 +226,14 @@ def _markdown(page, replacements, page_no):
 
 
 async def reconstruct_tables(
-    result, workdir, runtime, render_html, *, max_tokens, recover_page=None
-):
+    result: DocumentResult,
+    workdir: Path,
+    runtime: Inference,
+    render_html: Callable[[str, Path], Awaitable[None]],
+    *,
+    max_tokens: int,
+    recover_page: Callable[[int], Awaitable[Page | None]] | None = None,
+) -> int:
     """Reconstruct adjacent candidates right-to-left, preserving original page blocks.
 
     Optional recover_page(index) may return a fresh recovered Page before reconstruction.
@@ -271,7 +284,7 @@ async def reconstruct_tables(
             )
             diagnostic["raw"] = str(raw)
             if getattr(raw, "finish_reason", None) is not None:
-                diagnostic["finish_reason"] = raw.finish_reason
+                diagnostic["finish_reason"] = getattr(raw, "finish_reason")
                 diagnostic["usage"] = getattr(raw, "usage", {})
             # Parse the model's JSON first, including an explicit negative result.
             parsed = json.loads(raw)

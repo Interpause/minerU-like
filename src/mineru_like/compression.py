@@ -1,5 +1,7 @@
 """Optimize referenced delivery images after inference has completed."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import hashlib
@@ -13,12 +15,16 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
+from typing import Any, overload
 
 import numpy as np
 from PIL import Image, PngImagePlugin
 
-from .fidelity import compare
+from .config import CompressionSettings, Settings
+from .fidelity import Fidelity, compare
+from .result import DocumentResult
 
 log = logging.getLogger(__name__)
 
@@ -27,12 +33,12 @@ class _Canceled(Exception):
     pass
 
 
-def _check_canceled(event):
+def _check_canceled(event: threading.Event) -> None:
     if event.is_set():
         raise _Canceled()
 
 
-def _encode(command, event):
+def _encode(command: list[str], event: threading.Event) -> int:
     """Own the encoder process group and stop it promptly on cancellation."""
     _check_canceled(event)
     proc = subprocess.Popen(
@@ -56,7 +62,7 @@ def _encode(command, event):
             proc.wait()
 
 
-def _preset(image, kind, overrides):
+def _preset(image: Image.Image, kind: str, overrides: dict[str, str]) -> str:
     if kind not in {"photo", "drawing", "text", "icon", "mixed", "unknown"}:
         kind = "unknown"
     if kind == "unknown":
@@ -76,7 +82,7 @@ def _preset(image, kind, overrides):
     )
 
 
-def _destinations(text, name):
+def _destinations(text: str | None, name: str) -> bool:
     # Restrict replacement to Markdown link destinations, including angle brackets and titles.
     pattern = r"(\]\(\s*<?)" + re.escape(name) + r"(?=>?(?:\s|\)))"
     html_pattern = r"(?i)(\bsrc\s*=\s*[\"\x27])" + re.escape(name) + r"(?=[\"\x27])"
@@ -86,7 +92,15 @@ def _destinations(text, name):
     )
 
 
-def _replace(text, old, new):
+@overload
+def _replace(text: str, old: str, new: str) -> str: ...
+
+
+@overload
+def _replace(text: None, old: str, new: str) -> None: ...
+
+
+def _replace(text: str | None, old: str, new: str) -> str | None:
     if not text:
         return text
     pattern = r"(\]\(\s*<?)" + re.escape(old) + r"(?=>?(?:\s|\)))"
@@ -95,7 +109,7 @@ def _replace(text, old, new):
     return re.sub(html_pattern, lambda m: m.group(1) + new, text)
 
 
-def _texts(result):
+def _texts(result: DocumentResult) -> Iterator[str]:
     if result.markdown_override:
         yield result.markdown_override
     for page in result.pages:
@@ -105,7 +119,7 @@ def _texts(result):
             yield from block.footnotes
 
 
-def _color_chunks(data):
+def _color_chunks(data: bytes) -> tuple[tuple[bytes, bytes], ...]:
     """Read PNG color chunks without interpreting or changing their encoded values."""
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         return ()
@@ -124,20 +138,27 @@ def _color_chunks(data):
     return tuple(chunks)
 
 
-def _pnginfo(chunks):
+def _pnginfo(chunks: tuple[tuple[bytes, bytes], ...]) -> PngImagePlugin.PngInfo:
     info = PngImagePlugin.PngInfo()
     for kind, value in chunks:
         info.add(kind, value)
     return info
 
 
-def _candidate_bytes(image, fmt, icc, **options):
+def _candidate_bytes(image: Image.Image, fmt: str, icc: bytes | None, **options: Any) -> bytes:
     buf = io.BytesIO()
     image.save(buf, format=fmt, icc_profile=icc, **options)
     return buf.getvalue()
 
 
-def _optimize_bytes(data, settings, preset, binary, directory, event):
+def _optimize_bytes(
+    data: bytes,
+    settings: CompressionSettings,
+    preset: str,
+    binary: str | None,
+    directory: Path,
+    event: threading.Event,
+) -> tuple[tuple[bytes, str, Fidelity] | None, str]:
     _check_canceled(event)
     with Image.open(io.BytesIO(data)) as source:
         if getattr(source, "n_frames", 1) != 1:
@@ -160,7 +181,7 @@ def _optimize_bytes(data, settings, preset, binary, directory, event):
         ):
             _check_canceled(event)
             try:
-                metadata = {"exif": exif} if exif else {}
+                metadata: dict[str, Any] = {"exif": exif} if exif else {}
                 if fmt == "PNG" and chunks:
                     metadata["pnginfo"] = _pnginfo(chunks)
                 trials.append((_candidate_bytes(image, fmt, icc, **metadata, **opts), ext, True))
@@ -237,7 +258,13 @@ def _optimize_bytes(data, settings, preset, binary, directory, event):
         return best, reason
 
 
-def _run(result, settings, workdir, event, lock):
+def _run(
+    result: DocumentResult,
+    settings: Settings,
+    workdir: Path,
+    event: threading.Event,
+    lock: threading.Lock,
+) -> None:
     config = settings.compression
     if not config.enabled:
         return
@@ -348,7 +375,7 @@ def _run(result, settings, workdir, event, lock):
         original.diagnostics.extend(result.diagnostics)
 
 
-async def optimize_assets(result, settings, workdir) -> None:
+async def optimize_assets(result: DocumentResult, settings: Settings, workdir: Path) -> None:
     """Optimize delivery assets off the event loop without changing inference inputs."""
     event, lock = threading.Event(), threading.Lock()
     worker = asyncio.create_task(asyncio.to_thread(_run, result, settings, workdir, event, lock))

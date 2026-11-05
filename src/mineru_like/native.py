@@ -14,8 +14,12 @@ from collections import Counter
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path, PurePosixPath
+from typing import Any, Protocol
 
+from .config import Settings
+from .contracts import Inference, Payload
 from .result import Block, DocumentResult, Page
+from .verification import VerificationPipeline
 
 SUFFIXES = {
     "doc",
@@ -38,23 +42,32 @@ SUFFIXES = {
 ALIASES = {"htm": "html", "shtml": "html", "mht": "mhtml"}
 
 
+class NativePipeline(VerificationPipeline, Protocol):
+    @property
+    def runtime(self) -> Inference | None: ...
+
+    async def parse(
+        self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
+    ) -> DocumentResult: ...
+
+
 class _InlineSVGCounter(HTMLParser):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.depth = 0
         self.count = 0
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "svg":
             if self.depth == 0:
                 self.count += 1
             self.depth += 1
 
-    def handle_startendtag(self, tag, attrs):
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "svg" and self.depth == 0:
             self.count += 1
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag == "svg" and self.depth:
             self.depth -= 1
 
@@ -129,7 +142,7 @@ def _inference_image(source: Path, workdir: Path) -> Path:
         ) from exc
 
 
-def _inline(value):
+def _inline(value: Any) -> str:
     if isinstance(value, str):
         return value
     if not isinstance(value, list):
@@ -150,7 +163,7 @@ def _inline(value):
     return "".join(output)
 
 
-def _normalized_formula(value):
+def _normalized_formula(value: Any) -> str:
     text = _inline(value).strip()
     for opening, closing in (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$")):
         if (
@@ -163,10 +176,10 @@ def _normalized_formula(value):
     return " ".join(text.split())
 
 
-def _native_formula_counts(value):
+def _native_formula_counts(value: Any) -> Counter[str]:
     counts = Counter()
 
-    def visit(node):
+    def visit(node: Any) -> None:
         if isinstance(node, dict):
             if node.get("type") in {"equation", "equation_inline"}:
                 formula = _normalized_formula(node.get("content", ""))
@@ -182,7 +195,7 @@ def _native_formula_counts(value):
     return counts
 
 
-def _nested(value, depth=0):
+def _nested(value: Any, depth: int = 0) -> str:
     """Keep nested list and index items in document order."""
     if not isinstance(value, list):
         return _inline(value)
@@ -205,7 +218,7 @@ def _nested(value, depth=0):
     return "\n".join(lines)
 
 
-def _inventory(path):
+def _inventory(path: Path) -> tuple[list[str], int, int]:
     if not zipfile.is_zipfile(path):
         if path.suffix.lower() in {".html", ".htm", ".shtml"} and path.stat().st_size < 20_000_000:
             data = path.read_bytes()
@@ -219,7 +232,10 @@ def _inventory(path):
         ]
         math = 0
         for name in names:
-            if name.lower().endswith((".xml", ".xhtml", ".html", ".htm")) and archive.getinfo(name).file_size < 20_000_000:
+            if (
+                name.lower().endswith((".xml", ".xhtml", ".html", ".htm"))
+                and archive.getinfo(name).file_size < 20_000_000
+            ):
                 data = archive.read(name)
                 math += len(re.findall(rb"<(?:[\w.-]+:)?(?:oMath|math)(?:\s|>)", data))
                 # Office grouped or floating shapes can be omitted by the converter.
@@ -280,7 +296,9 @@ def _ooxml_word_count(path: Path, ext: str) -> int:
         return words
 
 
-def _spreadsheet_render_regions(pdf: Path, workdir: Path, settings):
+def _spreadsheet_render_regions(
+    pdf: Path, workdir: Path, settings: Settings
+) -> list[tuple[Path, int, tuple[float, float, float, float]]]:
     """Split oversized sheets into overlapping, bounded PDF regions."""
     import math
 
@@ -314,7 +332,9 @@ def _spreadsheet_render_regions(pdf: Path, workdir: Path, settings):
     return regions
 
 
-async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> DocumentResult:
+async def parse_native(
+    path: Path, suffix: str, workdir: Path, pipeline: NativePipeline
+) -> DocumentResult:
     import docvortex
 
     ext = ALIASES.get(suffix.lstrip("."), suffix.lstrip("."))
@@ -328,7 +348,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
         raise ValueError("Unsupported source content: inline SVG preservation cannot be verified")
     needs_visual = bool(unsupported)
 
-    async def visual_fallback():
+    async def visual_fallback() -> DocumentResult:
         # A rendered sheet cannot provide complete cell semantics.
         if ext in {"xls", "xlsx", "ods", "csv", "tsv"}:
             raise ValueError(
@@ -368,7 +388,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
         return fallback
 
     try:
-        result = await asyncio.to_thread(docvortex.parse, path.read_bytes(), file_suffix=ext)
+        result = await asyncio.to_thread(docvortex.parse, path.read_bytes(), file_suffix=ext)  # ty: ignore[invalid-argument-type]
     except Exception:
         return await visual_fallback()
     from .pipeline import _Diagnostics
@@ -381,7 +401,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
     document = result.to_dict()
     source_words = await asyncio.to_thread(_ooxml_word_count, path, ext)
 
-    def native_content(value):
+    def native_content(value: Any) -> str:
         if isinstance(value, dict):
             return " ".join(
                 native_content(v)
@@ -526,7 +546,7 @@ async def parse_native(path: Path, suffix: str, workdir: Path, pipeline) -> Docu
                         "Unsupported source content: embedded image cannot be visually inspected"
                     ) from exc
 
-                def structured_nonempty(raw):
+                def structured_nonempty(raw: str) -> list[Payload]:
                     parsed = _structured(raw)
                     if not parsed:
                         raise ValueError("native image transcription returned no regions")

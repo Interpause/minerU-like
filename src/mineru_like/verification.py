@@ -1,27 +1,53 @@
 """Independent Advanced page verification and conservative targeted recovery."""
 
+from __future__ import annotations
+
 import re
 import tempfile
 from collections import Counter
+from collections.abc import Callable, Sequence
 from difflib import SequenceMatcher
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Protocol, TypeVar, cast
 
 from PIL import Image
+
+from .config import Settings
+from .contracts import Diagnostic, Payload
+from .result import Block, Page
+
+T = TypeVar("T")
+
+
+class VerificationPipeline(Protocol):
+    @property
+    def settings(self) -> Settings: ...
+
+    async def _infer_valid(
+        self,
+        images: list[Path],
+        prompt: str,
+        validator: Callable[[str], T],
+        diagnostics: list[Diagnostic],
+        page_idx: int,
+        stage: str,
+        recovery: Callable[[], Path] | None = None,
+    ) -> T: ...
 
 
 class VerificationError(ValueError):
     """Independent evidence did not support a complete page result."""
 
 
-def _region_text(raw):
+def _region_text(raw: str) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("Empty region OCR")
     return raw.strip()
 
 
-def _retain_uncertain(page, imagepath, reason, block=None):
+def _retain_uncertain(page: Page, imagepath: Path, reason: str, block: Block | None = None) -> None:
     from .result import Block
 
     directory = Path(imagepath).parent / "images"
@@ -31,7 +57,12 @@ def _retain_uncertain(page, imagepath, reason, block=None):
         image = source.convert("RGB")
         if block and block.bbox:
             w, h = image.size
-            image = image.crop(tuple(int(v * (w if i % 2 == 0 else h)) for i, v in enumerate(block.bbox)))
+            image = image.crop(
+                cast(
+                    tuple[int, int, int, int],
+                    tuple(int(v * (w if i % 2 == 0 else h)) for i, v in enumerate(block.bbox)),
+                )
+            )
         image.save(Path(imagepath).parent / name)
     if block:
         block.metadata["uncertain"] = reason
@@ -43,7 +74,7 @@ def _retain_uncertain(page, imagepath, reason, block=None):
     page.blocks.append(Block("image", "", image_source=name, metadata={"warning": reason}))
 
 
-def _tokens(text):
+def _tokens(text: str) -> Counter[str]:
     # Ignore layout/markup differences while retaining words, numerals and
     # formula identifiers. Unmatched numbers remain material even on long pages.
     text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
@@ -51,7 +82,7 @@ def _tokens(text):
     return Counter(re.findall(r"[+−-]?\d+(?:[.,]\d+)*|[^\W\d_]+", text, re.UNICODE))
 
 
-def _content(blocks):
+def _content(blocks: list[Block]) -> str:
     return "\n".join(
         b.content
         for b in blocks
@@ -59,7 +90,7 @@ def _content(blocks):
     )
 
 
-def _difference(a, b):
+def _difference(a: str, b: str) -> tuple[set[str], float]:
     left, right = _tokens(a), _tokens(b)
     missing, extra = left - right, right - left
     numbers = {word for word in missing.keys() | extra.keys() if any(c.isdigit() for c in word)}
@@ -67,7 +98,7 @@ def _difference(a, b):
     return numbers, (sum(missing.values()) + sum(extra.values())) / total
 
 
-def _sequence(text):
+def _sequence(text: str) -> list[str]:
     # Normalize markup and soft line wrapping, but retain operators and signs.
     text = unescape(re.sub(r"<[^>]*>", " ", text)).casefold()
     text = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", text)
@@ -77,19 +108,19 @@ def _sequence(text):
     return re.findall(r"[+-]?\d+(?:[.,]\d+)*|[^\W\d_]+|[+\-*/=<>±×÷≤≥≠∑∫]", text, re.UNICODE)
 
 
-def _agree(a, b):
+def _agree(a: str, b: str) -> bool:
     return _sequence(a) == _sequence(b)
 
 
 class _TableRows(HTMLParser):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.tables = []
         self.table = None
         self.row = None
         self.cell = None
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "table" and self.table is None:
             self.table = []
         elif tag == "tr" and self.table is not None:
@@ -97,23 +128,23 @@ class _TableRows(HTMLParser):
         elif tag in {"td", "th"} and self.row is not None:
             self.cell = []
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         if self.cell is not None:
             self.cell.append(data)
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag in {"td", "th"} and self.cell is not None:
-            self.row.append(_cell("".join(self.cell)))
+            cast(list[str], self.row).append(_cell("".join(self.cell)))
             self.cell = None
         elif tag == "tr" and self.row is not None:
-            self.table.append(self.row)
+            cast(list[list[str]], self.table).append(self.row)
             self.row = None
         elif tag == "table" and self.table is not None:
             self.tables.append(self.table)
             self.table = None
 
 
-def _tables(text):
+def _tables(text: str) -> list[list[list[str]]]:
     parser = _TableRows()
     parser.feed(text)
     tables = parser.tables
@@ -132,7 +163,7 @@ def _tables(text):
     return tables
 
 
-def _math(value):
+def _math(value: str) -> str:
     value = value.strip()
     if value.startswith("$$") and value.endswith("$$"):
         value = value[2:-2]
@@ -141,11 +172,11 @@ def _math(value):
     return re.sub(r"\s+", "", unescape(value))
 
 
-def _cell(value):
+def _cell(value: str) -> str:
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]*>", "", value))).strip().casefold()
 
 
-def _critical_supported(blocks, independent):
+def _critical_supported(blocks: list[Block], independent: str) -> bool:
     evidence_tables = _tables(independent)
     formulae = re.findall(r"\$\$([\s\S]*?)\$\$|(?<!\$)\$([^$\n]+)\$(?!\$)", independent)
     evidence_formulae = Counter(_math(a or b) for a, b in formulae)
@@ -167,8 +198,15 @@ def _critical_supported(blocks, independent):
 
 
 async def verify_page(
-    pipeline, page, imagepath, diagnostics, recovery=None, *, crop_pdf=None, region_imagepath=None
-):
+    pipeline: VerificationPipeline,
+    page: Page,
+    imagepath: Path,
+    diagnostics: list[Diagnostic],
+    recovery: Callable[[], Path] | None = None,
+    *,
+    crop_pdf: Callable[..., Path] | None = None,
+    region_imagepath: Path | None = None,
+) -> Page:
     """Verify independently and retain source evidence for unresolved disagreements.
 
     Native content is never replaced. A visual text block may be replaced only
@@ -176,7 +214,7 @@ async def verify_page(
     """
     from .pipeline import PROMPTS
 
-    def markdown(raw):
+    def markdown(raw: str) -> str:
         if not isinstance(raw, str) or not raw.strip():
             raise ValueError("Empty independent Markdown")
         return raw
@@ -192,7 +230,14 @@ async def verify_page(
             recovery,
         )
     except ValueError:
-        diagnostics.append({"page_idx": page.page_idx, "stage": "advanced_verification", "status": "unresolved", "warning": "Independent Markdown unavailable"})
+        diagnostics.append(
+            {
+                "page_idx": page.page_idx,
+                "stage": "advanced_verification",
+                "status": "unresolved",
+                "warning": "Independent Markdown unavailable",
+            }
+        )
         _retain_uncertain(page, imagepath, "Independent verification unavailable")
         return page
     current = _content(page.blocks)
@@ -235,7 +280,9 @@ async def verify_page(
             try:
                 items = await pipeline._infer_valid(
                     [crop],
-                    (PROMPTS / "region_ocr.txt").read_text().replace("{target_region}", "[0, 0, 1000, 1000]"),
+                    (PROMPTS / "region_ocr.txt")
+                    .read_text()
+                    .replace("{target_region}", "[0, 0, 1000, 1000]"),
                     _region_text,
                     diagnostics,
                     page.page_idx,
@@ -250,15 +297,20 @@ async def verify_page(
         candidates[index] = candidate
         candidate_sequence = _sequence(candidate)
         supported = bool(candidate_sequence) and any(
-            independent_sequence[i:i + len(candidate_sequence)] == candidate_sequence
+            independent_sequence[i : i + len(candidate_sequence)] == candidate_sequence
             for i in range(len(independent_sequence) - len(candidate_sequence) + 1)
         )
-        revised_blocks = [replacements.get(i, b.content) for i, b in enumerate(page.blocks)
-                          if b.type not in {"image", "chart", "header_image", "footer_image"}]
+        revised_blocks = [
+            replacements.get(i, b.content)
+            for i, b in enumerate(page.blocks)
+            if b.type not in {"image", "chart", "header_image", "footer_image"}
+        ]
         current_text = "\n".join(revised_blocks)
-        proposed = "\n".join(candidate if i == index else replacements.get(i, b.content)
-                             for i, b in enumerate(page.blocks)
-                             if b.type not in {"image", "chart", "header_image", "footer_image"})
+        proposed = "\n".join(
+            candidate if i == index else replacements.get(i, b.content)
+            for i, b in enumerate(page.blocks)
+            if b.type not in {"image", "chart", "header_image", "footer_image"}
+        )
         current_score = SequenceMatcher(None, _sequence(current_text), independent_sequence).ratio()
         proposed_score = SequenceMatcher(None, _sequence(proposed), independent_sequence).ratio()
         if supported and proposed_score > current_score:
@@ -283,8 +335,13 @@ async def verify_page(
 
         for index, text in candidates.items():
             page.blocks[index].metadata["advanced_candidate_content"] = text
-            page.blocks.append(Block("text", "[Uncertain alternative transcription] " + text,
-                                     metadata={"source": "advanced_region", "original_block": index}))
+            page.blocks.append(
+                Block(
+                    "text",
+                    "[Uncertain alternative transcription] " + text,
+                    metadata={"source": "advanced_region", "original_block": index},
+                )
+            )
         _retain_uncertain(page, imagepath, "Independent verification disagrees with extraction")
         return page
     for index, text in replacements.items():
@@ -302,7 +359,13 @@ async def verify_page(
     return page
 
 
-async def verify_suspicious_regions(pipeline, page, imagepath, diagnostics, crop_pdf=None):
+async def verify_suspicious_regions(
+    pipeline: VerificationPipeline,
+    page: Page,
+    imagepath: Path,
+    diagnostics: list[Diagnostic],
+    crop_pdf: Callable[..., Path] | None = None,
+) -> Page:
     """Check only text regions with visible extraction problems or an explicit verify assessment."""
     from .pipeline import PROMPTS
 
@@ -330,11 +393,13 @@ async def verify_suspicious_regions(pipeline, page, imagepath, diagnostics, crop
                         int(v * (width if i % 2 == 0 else height)) for i, v in enumerate(block.bbox)
                     )
                     crop = Path(directory) / "region.png"
-                    image.crop(bounds).save(crop)
+                    image.crop(cast(tuple[int, int, int, int], bounds)).save(crop)
             try:
                 items = await pipeline._infer_valid(
                     [crop],
-                    (PROMPTS / "region_ocr.txt").read_text().replace("{target_region}", "[0, 0, 1000, 1000]"),
+                    (PROMPTS / "region_ocr.txt")
+                    .read_text()
+                    .replace("{target_region}", "[0, 0, 1000, 1000]"),
                     _region_text,
                     diagnostics,
                     page.page_idx,
@@ -342,8 +407,17 @@ async def verify_suspicious_regions(pipeline, page, imagepath, diagnostics, crop
                     None,
                 )
             except ValueError:
-                _retain_uncertain(page, imagepath, "Targeted region verification unavailable", block)
-                diagnostics.append({"page_idx": page.page_idx, "stage": "standard_verification", "status": "unresolved", "region": index})
+                _retain_uncertain(
+                    page, imagepath, "Targeted region verification unavailable", block
+                )
+                diagnostics.append(
+                    {
+                        "page_idx": page.page_idx,
+                        "stage": "standard_verification",
+                        "status": "unresolved",
+                        "region": index,
+                    }
+                )
                 continue
         if not _agree(block.content, items):
             diagnostics.append(
@@ -369,8 +443,16 @@ async def verify_suspicious_regions(pipeline, page, imagepath, diagnostics, crop
 
 
 async def verify_small_text_regions(
-    pipeline, page_idx, *, input_items, regions, pdf_path, image, workdir, diagnostics
-):
+    pipeline: VerificationPipeline,
+    page_idx: int,
+    *,
+    input_items: list[Payload],
+    regions: Sequence[Sequence[float]],
+    pdf_path: Path | None,
+    image: Image.Image | Path | str | None,
+    workdir: Path,
+    diagnostics: list[Diagnostic],
+) -> None:
     """Independently check bounded small-text crops against the page extraction."""
     import asyncio
 
@@ -430,18 +512,38 @@ async def verify_small_text_regions(
                 }
             )
             crop = await asyncio.to_thread(
-                _formula_crop, pdf_path, page_idx, box, image, workdir, 10000 + index, pipeline.settings
+                _formula_crop,
+                pdf_path,
+                page_idx,
+                box,
+                image,
+                workdir,
+                10000 + index,
+                pipeline.settings,
             )
             try:
                 recovered = await pipeline._infer_valid(
-                    [crop], (PROMPTS / "region_ocr.txt").read_text().replace("{target_region}", "[0, 0, 1000, 1000]"),
-                    _region_text, diagnostics, page_idx, "small_text_region", None,
+                    [crop],
+                    (PROMPTS / "region_ocr.txt")
+                    .read_text()
+                    .replace("{target_region}", "[0, 0, 1000, 1000]"),
+                    _region_text,
+                    diagnostics,
+                    page_idx,
+                    "small_text_region",
+                    None,
                 )
             except ValueError:
                 recovered = "Small-text region could not be transcribed"
-            input_items.append({"category": "text", "bbox": box,
-                                "content": recovered,
-                                "_uncertain": True, "_uncertain_crop": str(crop)})
+            input_items.append(
+                {
+                    "category": "text",
+                    "bbox": box,
+                    "content": recovered,
+                    "_uncertain": True,
+                    "_uncertain_crop": str(crop),
+                }
+            )
             continue
         crop = await asyncio.to_thread(
             _formula_crop, pdf_path, page_idx, box, image, workdir, 10000 + index, pipeline.settings
@@ -450,14 +552,27 @@ async def verify_small_text_regions(
         try:
             result = await pipeline._infer_valid(
                 [crop],
-                (PROMPTS / "region_ocr.txt").read_text().replace("{target_region}", "[0, 0, 1000, 1000]"),
-                _region_text, diagnostics, page_idx, "small_text_region", None,
+                (PROMPTS / "region_ocr.txt")
+                .read_text()
+                .replace("{target_region}", "[0, 0, 1000, 1000]"),
+                _region_text,
+                diagnostics,
+                page_idx,
+                "small_text_region",
+                None,
             )
         except ValueError:
             for item in overlapping:
                 item["_uncertain"] = True
                 item["_uncertain_crop"] = str(crop)
-            diagnostics.append({"page_idx": page_idx, "stage": "small_text_verification", "status": "unresolved", "region": index})
+            diagnostics.append(
+                {
+                    "page_idx": page_idx,
+                    "stage": "small_text_verification",
+                    "status": "unresolved",
+                    "region": index,
+                }
+            )
             continue
         evidence = _tokens(result)
         extracted_text = " ".join(item["content"] for item in overlapping)

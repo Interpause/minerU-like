@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
+from .config import CompressionSettings
+
 
 @dataclass(frozen=True)
 class Fidelity:
@@ -68,7 +70,9 @@ def _edge_counts(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
     return total, preserved
 
 
-def compare(original: Image.Image, candidate: Image.Image, settings) -> Fidelity:
+def compare(
+    original: Image.Image, candidate: Image.Image, settings: CompressionSettings
+) -> Fidelity:
     """Check decoded RGBA, structural similarity and preservation of sharp edges.
 
     These metrics reduce risk of damage but cannot prove semantic equivalence.

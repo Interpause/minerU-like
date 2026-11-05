@@ -11,12 +11,18 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from functools import partial
 from pathlib import Path
+from typing import Any, Literal, TypeVar, cast, overload
 
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
+from .config import Settings
+from .contracts import Diagnostic, Inference, Payload
 from .result import Block, DocumentResult, Page
+
+T = TypeVar("T")
 
 PROMPTS = Path(__file__).parent / "prompts"
 CATEGORIES = set(
@@ -27,7 +33,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".
 PDF_LOCK = threading.Lock()
 
 
-async def _gather_cancel(coroutines):
+async def _gather_cancel(coroutines: Iterable[Coroutine[Any, Any, T]]) -> list[T]:
     tasks = [asyncio.create_task(coroutine) for coroutine in coroutines]
     try:
         return await asyncio.gather(*tasks)
@@ -38,18 +44,18 @@ async def _gather_cancel(coroutines):
         raise
 
 
-class _Diagnostics(list):
-    def __init__(self, path):
+class _Diagnostics(list[Diagnostic]):
+    def __init__(self, path: Path) -> None:
         super().__init__()
         self.path = path
 
-    def append(self, item):
+    def append(self, item: Payload) -> None:
         super().append(item)
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
-def _pdf_count(path):
+def _pdf_count(path: Path) -> int:
     import pypdfium2 as pdfium
 
     with PDF_LOCK:
@@ -60,7 +66,21 @@ def _pdf_count(path):
             pdf.close()
 
 
-def _pdf_snapshot(path, idx, settings, workdir, recovery=False):
+@overload
+def _pdf_snapshot(
+    path: Path, idx: int, settings: Settings, workdir: Path, recovery: Literal[False] = False
+) -> tuple[Image.Image, str, bool, bool, list[list[float]]]: ...
+
+
+@overload
+def _pdf_snapshot(
+    path: Path, idx: int, settings: Settings, workdir: Path, recovery: Literal[True]
+) -> Path: ...
+
+
+def _pdf_snapshot(
+    path: Path, idx: int, settings: Settings, workdir: Path, recovery: bool = False
+) -> Path | tuple[Image.Image, str, bool, bool, list[list[float]]]:
     import pypdfium2 as pdfium
 
     with PDF_LOCK:
@@ -111,7 +131,7 @@ def _pdf_snapshot(path, idx, settings, workdir, recovery=False):
             pdf.close()
 
 
-def _small_text_regions(page, objects, raw):
+def _small_text_regions(page: Any, objects: list[Any], raw: Any) -> list[list[float]]:
     """Group visible small PDF text into at most four bounded page regions."""
     if page.get_rotation() != 0:
         return []
@@ -153,7 +173,7 @@ def _small_text_regions(page, objects, raw):
     ]
 
 
-def _native_regions(path, idx, items):
+def _native_regions(path: Path, idx: int, items: list[Payload]) -> dict[int, str]:
     import pypdfium2 as pdfium
 
     with PDF_LOCK:
@@ -185,13 +205,21 @@ def _native_regions(path, idx, items):
             pdf.close()
 
 
-def _image_frame(path, index):
+def _image_frame(path: Path, index: int) -> Image.Image:
     with Image.open(path) as source:
         source.seek(index)
         return ImageOps.exif_transpose(source).convert("RGB")
 
 
-def _formula_crop(pdf_path, index, box, image, workdir, ordinal, settings):
+def _formula_crop(
+    pdf_path: Path | None,
+    index: int,
+    box: Sequence[float],
+    image: Image.Image | Path | str | None,
+    workdir: Path,
+    ordinal: int,
+    settings: Settings,
+) -> Path:
     target = workdir / f"formula-{index}-{ordinal}.png"
     x0, y0, x1, y1 = box
     margin = 10
@@ -240,6 +268,7 @@ def _formula_crop(pdf_path, index, box, image, workdir, ordinal, settings):
                     )
                 ).save(target)
         else:
+            image = cast(Image.Image, image)
             width, height = image.size
             image.crop(
                 (
@@ -252,7 +281,9 @@ def _formula_crop(pdf_path, index, box, image, workdir, ordinal, settings):
     return target
 
 
-def _prepare_page_images(image, workdir, idx, preview_side):
+def _prepare_page_images(
+    image: Image.Image, workdir: Path, idx: int, preview_side: int
+) -> tuple[Path, Image.Image, Path]:
     path = workdir / f"page-{idx}.png"
     image.save(path)
     preview = image.copy()
@@ -262,7 +293,7 @@ def _prepare_page_images(image, workdir, idx, preview_side):
     return path, preview, preview_path
 
 
-def _uncertain_text_object(obj, raw):
+def _uncertain_text_object(obj: Any, raw: Any) -> bool:
     if raw.FPDFTextObj_GetTextRenderMode(obj.raw) in (3, 7):
         return True
     size = ctypes.c_float()
@@ -281,14 +312,14 @@ def _uncertain_text_object(obj, raw):
     )
 
 
-def _json(raw: str):
+def _json(raw: str) -> Any:
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
     return json.loads(raw)
 
 
-def _clean_markdown(text):
+def _clean_markdown(text: str) -> str:
     text = text.strip()
     n = len(text)
     if n < 8000:
@@ -308,10 +339,10 @@ def _clean_markdown(text):
     return text
 
 
-def _fallback_image_references(text):
+def _fallback_image_references(text: str) -> str:
     """Do not publish model-suggested local image paths that were not materialized."""
 
-    def markdown(match):
+    def markdown(match: re.Match[str]) -> str:
         destination = match.group(1) or match.group(2)
         if re.match(r"^(?:https?:|data:|#)", destination, re.I):
             return match.group(0)
@@ -319,7 +350,7 @@ def _fallback_image_references(text):
 
     text = re.sub(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))[^)]*\)", markdown, text)
 
-    def html_image(match):
+    def html_image(match: re.Match[str]) -> str:
         tag = match.group(0)
         src = re.search(r"\bsrc\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
         if src and not re.match(r"^(?:https?:|data:|#)", src.group(1), re.I):
@@ -329,7 +360,7 @@ def _fallback_image_references(text):
     return re.sub(r"<img\b[^>]*>", html_image, text, flags=re.I)
 
 
-def _assessment(raw: str):
+def _assessment(raw: str) -> Payload:
     value = _json(raw)
     if not isinstance(value, list):
         raise ValueError("expected layout array")
@@ -355,7 +386,7 @@ def _assessment(raw: str):
     }
 
 
-def _structured(raw: str):
+def _structured(raw: str) -> list[Payload]:
     stopped_at_limit = getattr(raw, "finish_reason", None) == "length"
     try:
         value = _json(raw)
@@ -451,7 +482,7 @@ def _structured(raw: str):
     return value
 
 
-def _ink_outside(preview, items):
+def _ink_outside(preview: Image.Image, items: list[Payload]) -> tuple[int, int]:
     gray = preview.convert("L")
     ink = gray.point(lambda pixel: 255 if pixel < 180 else 0)
     mask = Image.new("L", gray.size, 255)
@@ -465,7 +496,7 @@ def _ink_outside(preview, items):
     return total, outside
 
 
-def _risky_formula(content, box, image_size):
+def _risky_formula(content: str, box: Sequence[float], image_size: tuple[int, int]) -> bool:
     """Recognize small or visibly malformed formulas independently."""
     text = content.strip()
     width, height = image_size
@@ -480,7 +511,7 @@ def _risky_formula(content, box, image_size):
     return small or malformed
 
 
-def _figure_kind(item):
+def _figure_kind(item: Payload) -> str:
     kind = item.get("figure_kind", item.get("asset_type", "unknown"))
     if kind in {"photo", "drawing", "text", "icon", "mixed"}:
         return kind
@@ -502,15 +533,22 @@ def _figure_kind(item):
 class Pipeline:
     tiers = ("standard", "advanced")
 
-    def __init__(self, settings, runtime):
+    def __init__(self, settings: Settings, runtime: Inference) -> None:
         self.settings = settings
         self.runtime = runtime
         self.tier = "standard"
         self._call_count = 0
 
     async def _infer_valid(
-        self, images, prompt, validator, diagnostics, page_idx, stage, recovery=None
-    ):
+        self,
+        images: list[Path],
+        prompt: str,
+        validator: Callable[[str], T],
+        diagnostics: list[Diagnostic],
+        page_idx: int,
+        stage: str,
+        recovery: Callable[[], Path] | None = None,
+    ) -> T:
         errors = []
         for attempt in range(3):
             selected_images = (
@@ -632,7 +670,9 @@ class Pipeline:
         scoped.tier = tier
         return await scoped._parse(input_path, filename, ocr_mode, tier, workdir)
 
-    async def _parse(self, input_path, filename, ocr_mode, tier, workdir):
+    async def _parse(
+        self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
+    ) -> DocumentResult:
         suffix = Path(filename).suffix.lower()
         workdir.mkdir(parents=True, exist_ok=True)
         if suffix != ".pdf" and suffix not in IMAGE_EXTENSIONS:
@@ -652,11 +692,14 @@ class Pipeline:
 
         prepare_slots = asyncio.Semaphore(2)
 
-        async def parse_page(idx):
+        async def parse_page(idx: int) -> Page:
             async with prepare_slots:
                 if suffix == ".pdf":
-                    image, native, uncertain, compare, small_regions = await asyncio.to_thread(
-                        _pdf_snapshot, input_path, idx, self.settings, workdir
+                    image, native, uncertain, compare, small_regions = cast(
+                        tuple[Image.Image, str, bool, bool, list[list[float]]],
+                        await asyncio.to_thread(
+                            _pdf_snapshot, input_path, idx, self.settings, workdir
+                        ),
                     )
                     recovery = partial(_pdf_snapshot, input_path, idx, self.settings, workdir, True)
                     source_path = None
@@ -669,13 +712,13 @@ class Pipeline:
                     image.thumbnail((self.settings.max_image_side, self.settings.max_image_side))
                     native, uncertain, compare, small_regions = "", True, False, ()
 
-                    def recovery():
+                    def recovery() -> Path:
                         target = workdir / f"recovery-{idx}.png"
                         shutil.copyfile(source_path, target)
                         return target
 
                 image_size = image.size
-                blank_image = image.convert("L").getextrema()[0] >= 250
+                blank_image = cast(tuple[int, int], image.convert("L").getextrema())[0] >= 250
                 path, preview, preview_path = await asyncio.to_thread(
                     _prepare_page_images, image, workdir, idx, self.settings.preview_side
                 )
@@ -704,7 +747,7 @@ class Pipeline:
         if tier in {"standard", "advanced"}:
             from .verification import verify_page, verify_suspicious_regions
 
-            async def verify_one(page):
+            async def verify_one(page: Page) -> None:
                 if not page.blocks:
                     return
                 recovery = None
@@ -770,7 +813,9 @@ class Pipeline:
             pipeline = self
 
             class DiagnosticRuntime:
-                async def infer(self, images, prompt, *, max_tokens):
+                async def infer(
+                    self, images: list[Path], prompt: str, *, max_tokens: int | None = None
+                ) -> str:
                     started = time.monotonic()
                     pipeline._call_count += 1
                     number = pipeline._call_count
@@ -786,7 +831,7 @@ class Pipeline:
                             }
                         )
 
-            async def recover_page(page_index):
+            async def recover_page(page_index: int) -> Page | None:
                 page = copy.deepcopy(result.pages[page_index])
                 layouts = page.metadata.get("assessment", {}).get("layout", [])
                 candidates = [
@@ -812,8 +857,11 @@ class Pipeline:
                         self.settings,
                     )
                 elif suffix == ".pdf":
-                    imagepath = await asyncio.to_thread(
-                        _pdf_snapshot, input_path, page_index, self.settings, workdir, True
+                    imagepath = cast(
+                        Path,
+                        await asyncio.to_thread(
+                            _pdf_snapshot, input_path, page_index, self.settings, workdir, True
+                        ),
                     )
                 else:
                     imagepath = workdir / f"source-{page_index}.png"
@@ -849,7 +897,9 @@ class Pipeline:
                 block = Block(
                     "table",
                     item["content"],
-                    bbox=tuple(float(x) / 1000 for x in box),
+                    bbox=cast(
+                        tuple[float, float, float, float], tuple(float(x) / 1000 for x in box)
+                    ),
                     metadata={"source": "visual", "recovered_for_table_reconstruction": True},
                 )
                 existing = [(i, b) for i, b in enumerate(page.blocks) if b.type == "table"]
@@ -878,20 +928,20 @@ class Pipeline:
 
     async def _page(
         self,
-        idx,
-        image,
-        workdir,
-        diagnostics,
-        assets,
-        native,
-        has_raster,
-        ocr_mode,
-        recovery=None,
-        compare_native=False,
-        pdf_path=None,
-        original_image=None,
-        small_regions=(),
-    ):
+        idx: int,
+        image: tuple[Path, Path, tuple[int, int], bool],
+        workdir: Path,
+        diagnostics: list[Diagnostic],
+        assets: dict[str, Path],
+        native: str,
+        has_raster: bool,
+        ocr_mode: str,
+        recovery: Callable[[], Path] | None = None,
+        compare_native: bool = False,
+        pdf_path: Path | None = None,
+        original_image: Path | None = None,
+        small_regions: Sequence[Sequence[float]] = (),
+    ) -> Page:
         path, preview_path, image_size, blank_image = image
         try:
             assessment = await self._infer_valid(
@@ -917,7 +967,7 @@ class Pipeline:
                 page_idx=idx, blocks=[], metadata={"route": "blank", "assessment": assessment}
             )
 
-        def nonempty(raw):
+        def nonempty(raw: str) -> list[Payload]:
             items = _structured(raw)
             if not items:
                 raise ValueError("no blocks for a nonblank page")
@@ -943,7 +993,7 @@ class Pipeline:
             )
         except ValueError:
 
-            def markdown(raw):
+            def markdown(raw: str) -> str:
                 if not raw.strip():
                     raise ValueError("Empty Markdown")
                 return raw.strip()
@@ -1032,7 +1082,7 @@ class Pipeline:
                 ]
             )
 
-        async def recognize_formula(n, item):
+        async def recognize_formula(n: int, item: Payload) -> tuple[str | None, Path] | None:
             content, box = item["content"], item["bbox"]
             if item["category"] not in {"display_formula", "inline_formula"} or not (
                 self.tier == "advanced" or _risky_formula(content, box, image_size)
@@ -1042,7 +1092,7 @@ class Pipeline:
                 _formula_crop, pdf_path, idx, box, original_image or path, workdir, n, self.settings
             )
 
-            def formula(raw):
+            def formula(raw: str) -> str:
                 if not raw.strip() or raw.lstrip().startswith("```"):
                     raise ValueError("invalid formula recognition")
                 return raw.strip()
@@ -1130,7 +1180,7 @@ class Pipeline:
                     diagnostics.append(
                         {"page_idx": idx, "stage": "formula", "status": "unresolved"}
                     )
-            bbox = tuple(float(x) / 1000 for x in box)
+            bbox = cast(tuple[float, float, float, float], tuple(float(x) / 1000 for x in box))
             source = None
             kind = {
                 "display_formula": "equation",
@@ -1270,7 +1320,7 @@ class Pipeline:
                     if item["category"] not in IMAGES:
                         continue
                     box = [v / 1000 for v in item["bbox"]]
-                    a = block.bbox
+                    a = cast(tuple[float, float, float, float], block.bbox)
                     intersection = max(0, min(a[2], box[2]) - max(a[0], box[0])) * max(
                         0, min(a[3], box[3]) - max(a[1], box[1])
                     )
