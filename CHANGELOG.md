@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — 2026-11-06
+
+- Persist structured logs automatically in `data_dir/logs/server.jsonl` and warning/error-only `issues.jsonl`. Each rotates at 10 MiB with five backups. Keep logs across restarts and ordinary job-retention cleanup.
+- Correlate concurrent jobs and worker-thread diagnostics with uploaded filename, upload/job IDs, input size/SHA-256, tier and configuration fingerprint. Record safe runtime profiles, page/stage starts and results, usage/timing, output IDs, quality warnings, rejected requests and chained failure tracebacks. Preserve failed-job identity manifests and include bounded managed-backend error tails without disturbing the child's output offset.
+- Redact configured API keys from persistent logs; omit routine request bodies, headers, prompts and raw transcription candidates. Logs still contain filenames, local evidence paths and exception/backend details.
+- Add `scripts/identify_logged_files.py` to resolve the unchanged plugin's hashed upload names against Zotero PDF storage. Report storage keys/candidate paths, use input hashes to disambiguate duplicate names, include rotated logs, and support successful jobs for unflagged quality problems. No plugin or document changes.
+- Document log collection, rotation, retention, attachment lookup and the limits of automatic quality detection. Page numbers refer to uploaded chunks/native units; Zotero item identity and chunk offsets are not transmitted.
+- Validation on Python 3.12 with real cwebp: **228 passed, 19 skipped**, with two existing Pillow warnings. Ruff lint/format, advisory ty and source/wheel builds pass. Focused regressions cover concurrent identity/thread propagation, quality evidence, chained traceback redaction, startup/upload failures, retention, backend log offsets and Unicode/duplicate-name attachment lookup. CUDA, actual Zotero and host integrations were not rerun for this logging patch.
+
 ## 0.3.0 — 2026-11-06
 
 ### Visual inference and localized recovery
