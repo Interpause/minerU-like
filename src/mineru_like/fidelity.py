@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image
 
 from .config import CompressionSettings
@@ -17,7 +18,7 @@ class Fidelity:
     reason: str
 
 
-def _ssim(a: np.ndarray, b: np.ndarray) -> float:
+def _ssim(a: NDArray[np.generic], b: NDArray[np.generic]) -> float:
     # SSIM over all color channels; tile-level scores detect localized damage.
     a = a.astype(np.float64)
     b = b.astype(np.float64)
@@ -30,7 +31,7 @@ def _ssim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.min(score))
 
 
-def _global_ssim(a: np.ndarray, b: np.ndarray) -> float:
+def _global_ssim(a: NDArray[np.generic], b: NDArray[np.generic]) -> float:
     """Compute whole-image channel moments without full-image float arrays."""
     sums = np.zeros((5, 3), dtype=np.float64)
     height, width = a.shape[:2]
@@ -52,7 +53,7 @@ def _global_ssim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.min(score))
 
 
-def _edge_counts(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
+def _edge_counts(a: NDArray[np.generic], b: NDArray[np.generic]) -> tuple[int, int]:
     """Count each horizontal and vertical edge once, including tile boundaries."""
     height, width = a.shape[:2]
     total = preserved = 0

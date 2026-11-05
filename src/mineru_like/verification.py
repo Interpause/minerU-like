@@ -1,4 +1,4 @@
-"""Independent Advanced page verification and conservative targeted recovery."""
+"""Separate model-pass verification and conservative targeted recovery."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class VerificationPipeline(Protocol):
 
 
 class VerificationError(ValueError):
-    """Independent evidence did not support a complete page result."""
+    """A separate verification pass did not support a complete page result."""
 
 
 def _region_text(raw: str) -> str:
@@ -115,10 +115,10 @@ def _agree(a: str, b: str) -> bool:
 class _TableRows(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.tables = []
-        self.table = None
-        self.row = None
-        self.cell = None
+        self.tables: list[list[list[str]]] = []
+        self.table: list[list[str]] | None = None
+        self.row: list[str] | None = None
+        self.cell: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "table" and self.table is None:
@@ -207,10 +207,11 @@ async def verify_page(
     crop_pdf: Callable[..., Path] | None = None,
     region_imagepath: Path | None = None,
 ) -> Page:
-    """Verify independently and retain source evidence for unresolved disagreements.
+    """Compare a separate model pass and retain source evidence for disagreements.
 
+    The separate pass uses the same inference backend; agreement is not ground truth.
     Native content is never replaced. A visual text block may be replaced only
-    if targeted region OCR agrees with the independent pass.
+    if targeted region OCR agrees with the separate pass.
     """
     from .pipeline import PROMPTS
 
@@ -453,7 +454,7 @@ async def verify_small_text_regions(
     workdir: Path,
     diagnostics: list[Diagnostic],
 ) -> None:
-    """Independently check bounded small-text crops against the page extraction."""
+    """Compare a separate model pass over small-text crops with the page extraction."""
     import asyncio
 
     from .pipeline import PROMPTS, _formula_crop

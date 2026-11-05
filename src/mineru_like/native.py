@@ -177,7 +177,7 @@ def _normalized_formula(value: Any) -> str:
 
 
 def _native_formula_counts(value: Any) -> Counter[str]:
-    counts = Counter()
+    counts: Counter[str] = Counter()
 
     def visit(node: Any) -> None:
         if isinstance(node, dict):
@@ -387,6 +387,8 @@ async def parse_native(
                 )
         return fallback
 
+    # ext was checked against SUFFIXES above; ty cannot narrow it to DocVortex's
+    # literal suffix union from that runtime set membership check.
     try:
         result = await asyncio.to_thread(docvortex.parse, path.read_bytes(), file_suffix=ext)  # ty: ignore[invalid-argument-type]
     except Exception:

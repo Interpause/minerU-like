@@ -497,7 +497,7 @@ def _ink_outside(preview: Image.Image, items: list[Payload]) -> tuple[int, int]:
 
 
 def _risky_formula(content: str, box: Sequence[float], image_size: tuple[int, int]) -> bool:
-    """Recognize small or visibly malformed formulas independently."""
+    """Select small or visibly malformed formulas for a separate recognition pass."""
     text = content.strip()
     width, height = image_size
     small = (box[3] - box[1]) * height / 1000 < 24 or (box[2] - box[0]) * width / 1000 < 24
