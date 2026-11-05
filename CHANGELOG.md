@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-05
+
+### Development contracts and documentation
+
+- Make DOCX, PPTX and spreadsheet fixture dependencies explicit in the dev group. Retain every production dependency; `pypptx-with-oxml` supplies `pptx` without installing competing `python-pptx`. Existing locked dependency versions are unchanged; add ty 0.0.97 for development only.
+- Annotate owned Python source, tests and scripts, including nested callbacks and test doubles. Share structural inference, parser, engine and result-writer contracts; declare string-compatible inference metadata and keep generic validator returns useful. Package `py.typed`.
+- Recommend `uv run --locked ty check` separately from pytest. Check all owned directories on the Python 3.12 baseline without global rule suppression or enforcement. Keep narrow escapes for dynamic document/SQLite data, third-party PDF/SVG bindings and deliberate malformed fixtures.
+- Preserve HTTP response inference behavior explicitly; compare the pre-release OpenAPI schema with the baseline and add regression coverage for health, response schemas and request errors. Share the application version with health and OpenAPI metadata.
+- Shorten README and add configuration, parsing, operations, architecture and development references alongside testing. Review comments/docstrings, clarify same-model verification limits, and retain upstream prompts and license text unchanged. Record the pre-existing terminal-job retention/cancellation race in TODO without changing job behavior.
 
 ### Runtime, configuration, and jobs
 
@@ -22,11 +30,13 @@
 
 ### Validation and remaining limits
 
-- Final verification: **203 passed, 1 skipped** with plugin, cwebp and live CPU inference enabled. The skipped test is real Flatpak execution. Ruff and source/wheel builds passed; the wheel contains all 18 prompts and dependency notices.
+- Fresh 0.2.0 verification: **185 passed, 20 skipped** on each of Python 3.12, 3.13 and 3.14. The optional plugin/live/encoder/Flatpak checks account for ordinary skips. Enabling real cwebp and managed CPU inference on Python 3.12 gives **189 passed, 16 skipped**; the remaining skips are 15 unchanged-plugin cases (missing fflate prerequisite) and host Flatpak. Two existing Pillow `getdata` deprecation warnings remain.
+- ty 0.0.97, Ruff lint/format, relative documentation links, source/wheel builds and an isolated wheel installation/import/CLI-help check pass. Artifacts advertise 0.2.0, retain Python `>=3.12,<3.15`, and contain all 18 prompts, notices, licenses and `py.typed`; installed packages exclude agent instructions and private/generated assets. Runtime-only Python 3.12 imports and CLI help pass independently of the dev group.
+- Historical pre-migration checkpoint: **203 passed, 1 skipped** with plugin, cwebp and live CPU inference enabled. The skipped test was real Flatpak execution. This remains earlier evidence, not a fresh plugin result for 0.2.0.
 
 - Add [copyable test instructions](docs/TESTING.md) and an opt-in full-suite runner that checks prerequisites and rejects skips. Separate mocked plugin lifecycle tests from actual model inference tests, including both tiers, lower-tier fallback and Force OCR.
 - Live CPU checks with Q6_K weights/BF16 projector/KV confirm four slots, both EOS tokens, queued image requests, isolated cancellation and retained token-limit responses. A simple digital PDF publishes successfully in both Standard and Advanced. These are smoke checks, not a representative quality or throughput corpus.
-- Q8_0 weights and complete CUDA/6 GB memory peaks remain unverified. The development GPU is visible, but a confirmed nono denial on the CUDA library directory prevents loading cuBLAS and llama.cpp exposes no CUDA device. The real Flatpak smoke test remains blocked by a confirmed sandbox denial on the system Flatpak repository.
+- Q8_0 weights and complete CUDA/6 GB memory peaks remain unverified. Earlier runs confirmed a nono denial on the CUDA library directory and the system Flatpak repository; those capability checks were not repeated for this release. Actual Zotero, host Flatpak and representative corpus/deployment validation remain user-run checks documented in [testing](docs/TESTING.md) and [TODO](TODO.md).
 - Real long-document/chunk, difficult equation, camera, and continued-table quality/recall measurements remain in [TODO.md](TODO.md). Intermediate reconstructed pages containing images remain conservatively unsupported; their original fragments are retained.
 
 ## 0.1.0 — 2026-11-05

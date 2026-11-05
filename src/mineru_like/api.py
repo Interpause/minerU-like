@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from . import __version__
 from .config import Settings
 from .contracts import Engine, Parser, Payload, SQLiteRecord
 from .store import Store, config_snapshot
@@ -86,7 +87,7 @@ def create_app(
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
                 lock.close()
 
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(lifespan=lifespan, version=__version__)
     app.state.store, app.state.worker = store, worker
 
     @app.middleware("http")
@@ -105,7 +106,7 @@ def create_app(
         status = getattr(engine, "state", "configured" if parser else "unconfigured")
         response: Payload = {
             "status": "ok",
-            "version": "0.1.0",
+            "version": __version__,
             "features": {"sources": ["file_id"], "output_formats": ["zip"]},
             "engine_status": status,
         }

@@ -62,6 +62,7 @@ engineering report proportionate to the change, not a transcript of tool calls.
 | `src/mineru_like/pipeline.py`, `verification.py`, `tables.py`, `native.py` | Extraction, recovery and document adapters |
 | `src/mineru_like/processor.py`, `result.py`, `svg_assets.py`, `compression.py`, `fidelity.py` | Delivery, assets and fidelity checks |
 | [pyproject.toml](pyproject.toml), [config.example.toml](config.example.toml) | Tool settings, dependencies and configuration examples |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dependency roles, advisory typing and contributor workflow |
 | [docs/TESTING.md](docs/TESTING.md) | Test prerequisites, integration commands and limits |
 | [CHANGELOG.md](CHANGELOG.md), [TODO.md](TODO.md) | Recorded changes and explicitly distinguished remaining work |
 
@@ -80,3 +81,7 @@ uv build
 Use Ruff to format touched Python files, following `pyproject.toml`. See the
 testing guide for integrations and the full-suite runner. Keep changing runtime
 defaults and validation results in their authoritative files, not in this guide.
+
+Owned Python source, tests and scripts have comprehensive annotations. Preserve
+useful contracts when editing; the separately recommended `uv run --locked ty check`
+is advisory and does not require a wider typing cleanup on every focused task.
