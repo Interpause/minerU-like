@@ -5,11 +5,15 @@ Current remaining work; historical release evidence is retained in the changelog
 ## Deployment validation — highest priority
 
 - [ ] Measure actual application/device VRAM on a nominal 6 GB GPU, including startup, dense/high-resolution pages, two-image table requests, cancellation/restart, and sustained jobs. Confirm useful headroom with the four 32,768-token slots, 1024/1024 batches, BF16 projector/KV, and the configured image budget. The target is at most 5 GiB complete process usage.
-- [ ] Run the real CUDA inference path, including automatic device detection and explicit failure/fallback behavior. Current live inference evidence is CPU-based: an earlier run saw the GPU but confirmed a nono denial on the CUDA library directory, preventing that backend from loading cuBLAS. This release does not repeat the capability check.
+- [ ] Complete controlled CUDA validation, including automatic device detection, explicit failure/fallback behavior and memory peaks. User-supplied library logs now show successful CUDA processing as well as CUDA graph-allocation out-of-memory failures; identify the pressure source and verify capacity changes with measured retries. Earlier development sandbox restrictions are historical evidence, not the cause of these observed failures.
 - [ ] Compare Q8_0, BF16 and Q6_K on numerals, operators, inline/display math, small text, table cells, and visual descriptions; do not infer quality parity from successful loading or a single page.
 - [ ] Run `doctor --smoke` against the actual host Flatpak installation. Check staged-directory access, private profiles, fonts, PDF output, timeout/repeated cancellation, and coexistence with an open desktop LibreOffice session. An earlier attempt confirmed a development sandbox denial on the system Flatpak repository; host validation remains outstanding.
 - [ ] Exercise the actual Zotero GUI and process manager: startup deadline, authentication, cache publication/recovery, page navigation, figure/table retrieval, and PNG/WebP/SVG rendering.
 - [ ] Exercise real 200/201-page plugin submissions, local/global page numbering, asset collisions, chunk checkpoints, cancellation, retry, and restart. Current client integration does not establish these long-document flows.
+
+## High-priority exploration — deferred
+
+- [ ] Compare Standard's scheduling, call graph and throughput with MinerU's implementation. Profile CPU preparation, backend queuing/slots/token batches, optional recovery/caption/table passes and artifact work against a serial baseline on representative CUDA workloads. Explore additional concurrency optimizations or an explicit effort tier below Standard with measured quality/latency tradeoffs; verify how the unchanged plugin could select it. Preserve official Ovis task contracts and distinguish removable work from backend memory limits. This exploration is high priority but deferred beyond the current lecture-PDF investigation.
 
 ## Missing or incomplete parsing capabilities
 
@@ -35,6 +39,9 @@ Current remaining work; historical release evidence is retained in the changelog
 
 ## Delivery assets and compression
 
+- [ ] Design compact figure annotations for the canonical transcript: `[AI img desc: <crop_file_name>]`, one or two short sentences of key details, then a brief conservative inspection cue (dense labels/relationships need checking, or a likely decorative image has little added information). Preserve source captions and full raw model output, keep final crop identity traceable through asset renaming, and test that text anchors survive unchanged-plugin image stripping. Importance is not an official Ovis output field or a guaranteed model judgment; use existing evidence and qualify uncertain cues without changing task prompts/schema.
+- [ ] Preserve slide-furniture semantics in Markdown: collapse only corroborated repeated running headers/footers, retain cover text and substantive unique footer titles/URLs, and keep all original structured records. Add durable slide/figure anchors alongside normal image assets; cached image paths alone do not establish viewing-agent access through the plugin's separate visual tools.
+
 - [ ] Broaden source SVG export support for complex clipping, text positioning, definitions, fonts, and transparency while keeping text live and excluding unrelated page content. Preserve raster fallback for uncertain cases.
 - [ ] Validate SVG and raster appearance inside Zotero's actual rendering surfaces, not only the server's comparison renderer and ZIP normalizer.
 - [ ] Calibrate CPU fidelity thresholds on real scientific images: decimal points, minus signs, superscripts, tiny labels, colored hairlines, photographs with markings, and already-lossy diagrams. Measure both missed damage and unnecessary rejection.
@@ -52,7 +59,6 @@ Current remaining work; historical release evidence is retained in the changelog
 - [ ] Bound or rotate managed llama-server log storage and cap startup-failure readback. The current temporary process log can grow for the lifetime of the child.
 - [ ] Improve renderer and tool diagnostics with more deployment-specific failure cases while retaining bounded logs and owned-instance cleanup.
 - [ ] Optionally provide curated, pinned model/projector/llama.cpp download manifests and broader platform encoder provisioning. Setup currently uses supplied inference paths plus a generic checksum download command; automatic encoder provisioning targets Linux x86_64.
-- [ ] Measure slot throughput against a serial baseline on representative CUDA workloads. Independent requests and backend queuing are implemented; combining unrelated tasks into one prompt remains deferred.
 - [ ] Evaluate auxiliary CPU OCR/layout/formula/table models only when an observed failure justifies their maintenance and latency cost.
 - [ ] Add automated CI/release checks for the locked dependency set, built wheel, packaged prompts/notices, and supported platform smoke tests.
 
