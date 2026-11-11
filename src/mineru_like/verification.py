@@ -1,4 +1,4 @@
-"""Independent page comparison and conservative, localized recovery."""
+"""Separate same-model page comparison and conservative, localized recovery."""
 
 from __future__ import annotations
 
@@ -486,7 +486,7 @@ async def verify_page(
     region_imagepath: Path | None = None,
     assets: dict[str, Path] | None = None,
 ) -> Page:
-    """Align a single independent reading in order and inspect only disputed blocks."""
+    """Align a separate reading, then inspect disputed and resolution-risk blocks."""
     from .pipeline import PROMPTS
 
     try:

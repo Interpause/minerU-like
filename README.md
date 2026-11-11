@@ -6,6 +6,8 @@ Local OvisOCR3 document parsing with the asynchronous uploads/jobs API used by t
 - Standard and Advanced parsing tiers, source assets, structured output and labeled generated descriptions.
 - Durable local jobs, cancellation and recovery, with optional LibreOffice visual recovery.
 
+See the [feature map](FEATURES.md) for the full capability summary, limits and links to detailed guides.
+
 Linux x86_64 is the initial target. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and supply a compatible llama-server distribution, OvisOCR3 Q8_0 GGUF model and BF16 projector. CUDA/6 GB memory usage still requires measurement; CPU inference is supported but slower. See [remaining work](TODO.md) and [release evidence](CHANGELOG.md).
 
 ## Quick start

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a root feature map linked from README, with implemented capabilities, consequential limits and links to maintained guides. Include it in source distributions.
+- Separate TODO's validation queue, concrete gaps, agreed engineering directions, conditional extensions and accepted boundaries. Keep fidelity/reliability first; distinguish Advanced quality/performance from shared pipeline efficiency, native Advanced support and optional lower-effort tiers. Carry existing pending work forward and retain completed/historical evidence in the changelog.
+- Document current caption/fallback differences and stage-specific output ceilings without changing parsing behavior. Record best-effort native descriptions, error-boundary review and output-budget auditing as follow-ups, not completed fixes. Qualify unexecuted plugin lifecycle coverage, preserve pinned historical source observations, and correct UUID/verification comments and routine build guidance.
+
 - Consolidate duplicate fallback-image, three-page reconstruction, repetition-cleanup and small-mark fidelity scenarios without dropping their distinct failure modes. Retain separate cancellation/ownership, bbox, math, source-isolation, native-rejection and legacy-override checks.
 - Use representative Ovis category inputs and current typed generated-caption ZIP fixtures. Centralize exact annotation examples; allow additive health fields and unordered schema requirements. Route fake model replies by official task prompts and generated image content instead of temporary filenames, while retaining deliberate runtime/model contracts.
 - Reduce the unchanged-plugin matrix from 15 to 7 combinations, retaining all tier/OCR choices and PNG/WebP/SVG coverage. Select detailed crop lifecycle checks for the three Standard format cases.

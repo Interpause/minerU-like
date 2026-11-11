@@ -9,7 +9,7 @@ Managed inference starts and owns a llama-server subprocess. External mode sends
 ## Data flow and interfaces
 
 1. `cli.py` starts the configured runtime and `DocumentProcessor`, or acts as an HTTP client. `api.py` validates uploads and jobs, enforces authentication and reserves storage through `store.py`.
-2. `worker.py` claims queued jobs and invokes the parser with an input path, filename, tier, OCR mode and work directory. `processor.py` runs `pipeline.py`, improves source assets, compresses delivery assets and validates references. `result.py` serializes the resulting pages, blocks, assets and diagnostics to a ZIP.
+2. `worker.py` claims queued jobs and invokes the parser with an input path, filename, tier, OCR mode and work directory. `processor.py` runs `pipeline.py`, improves source assets, compresses delivery assets and validates references. `result.py` renders and serializes pages, blocks, assets and diagnostics to a ZIP. `presentation.py` owns annotation syntax; `furniture.py` and typed table-body projections provide reader-only presentation without replacing original structured fragments.
 3. The visual pipeline calls `runtime.py` for independent model requests; `native.py` and `libreoffice.py` handle native extraction and optional rendering. `verification.py` and `tables.py` support recovery and cross-page reconstruction; `svg_assets.py`, `compression.py` and `fidelity.py` handle delivery assets.
 4. The worker publishes the ZIP and its ID only after successful writing and storage admission. Clients retrieve it through the file route.
 
@@ -33,7 +33,7 @@ The implemented routes are listed below; request validation and response shapes 
 
 Uploads progress from pending through uploading back to pending after transfer, then to completed on confirmation. Jobs enter `queued`, become `running`, and finish `completed`, `failed` or `canceled`. Restart marks running jobs failed; queued jobs with a changed effective configuration fail and must be resubmitted, while compatible queued jobs resume. Canceling a terminal job leaves its status unchanged. See [operations](OPERATIONS.md) for retention and diagnostics.
 
-HTTP validation distinguishes invalid options/metadata (400), missing objects (404), conflicts (409), upload limits (413), unsupported formats (415), exhausted storage (429) and a missing parser (503). Processing failures become failed jobs with an error and, when preserved, a diagnostics path. A malformed or truncated model response may instead yield partial recovery; diagnostics and structured metadata record incompleteness, and partial structured results include a concise unclear-content marker in delivery. Infrastructure failures are not successful fallback results.
+HTTP validation distinguishes invalid options/metadata (400), missing objects (404), conflicts (409), upload limits (413), unsupported formats (415), exhausted storage (429) and a missing parser (503). Processing failures become failed jobs with an error and, when preserved, a diagnostics path. A malformed or truncated model response may instead yield partial recovery; diagnostics and structured metadata record incompleteness, and partial structured results include a concise unclear-content marker in delivery. Required inference, bbox materialization and publication failures propagate. Optional asset improvements can retain originals, while native conversion/caption paths have additional differences; see [failure and fallback boundaries](PARSING.md#failure-and-fallback-boundaries).
 
 ## PDF and SVG dependencies
 

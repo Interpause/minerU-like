@@ -6,9 +6,9 @@ See [content rendering contracts](CONTENT_RENDERING.md) for semantic annotations
 
 Standard normally makes one full-page structured extraction request per nonblank PDF/image page. Advanced adds one full-page Markdown comparison for each nonempty page and localized recovery where evidence calls for it; it does not routinely reread every formula or text region. PDF glyph positions can guide crop geometry only: PDF text is not equation truth or transcription evidence. Equations are read visually even in digital-born PDFs. Native OMML/MathML equations are retained where DocVortex supports their structure; inventory counts and successful conversion do not prove general semantic fidelity.
 
-Structured requests use JSON schemas as an expected backend capability, without capability probing, negotiation or fallback. Raw LaTeX recognition uses unconstrained output, the official sampling temperature of zero and thinking disabled. Independent pages use independent requests; the documented two-image task is reserved for related-page reconstruction. Raw text, finish reason and usage survive before cleanup. Valid structured JSON is parsed unchanged; damaged responses can retain validated complete records and table fragments. Partial structured results carry incomplete status in structured metadata and diagnostics, and a concise unclear-content marker in delivery. If structured extraction fails, recovery can use a distinct page view, layout and Markdown requests; fallback status is recorded in diagnostics.
+Structured requests use JSON schemas as an expected backend capability, without capability probing, negotiation or fallback. Raw LaTeX recognition uses unconstrained output, the official sampling temperature of zero and thinking disabled. Independent pages use independent requests; the documented two-image task is reserved for related-page reconstruction. Raw text, finish reason and usage are retained alongside any cleanup/recovery provenance. Valid structured JSON is parsed before repair; validation may normalize accepted boundary coordinates and add metadata. Damaged responses can retain validated complete records and table fragments. Partial structured results carry incomplete status in structured metadata and diagnostics, and a concise unclear-content marker in delivery. If structured extraction fails, recovery can use a distinct page view, layout and Markdown requests; fallback status is recorded in diagnostics.
 
-Recovery crops retain bounded context and padding while guarding neighboring regions. Padding uses estimated effective pixels when the backend geometry is known; otherwise it uses submitted image dimensions and the effective backend resolution remains unknown. Each region receives at most two distinct views, with no identical retries. If a formula remains unreadable, delivery uses a concise general placeholder such as `[Unclear formula; pg 1, approx. middle-right; zoom if possible.]`, without guessed content or exact coordinates. Detailed recovery evidence belongs in sidecar diagnostics and logs; the unchanged plugin does not provide a warning UI for it. Backend and input failures remain errors.
+Recovery crops retain bounded context and padding while guarding neighboring regions. Padding uses estimated effective pixels when the backend geometry is known; otherwise it uses submitted image dimensions and the effective backend resolution remains unknown. Each region receives at most two distinct views, with no identical retries. If a formula remains unreadable, delivery uses a concise general placeholder such as `[Unclear formula; pg 1, approx. middle-right; zoom if possible.]`, without guessed content or exact coordinates. Detailed recovery evidence belongs in sidecar diagnostics and logs; the unchanged plugin does not provide a warning UI for it. Required processing failures remain errors; see [failure and fallback boundaries](#failure-and-fallback-boundaries) for optional improvements and current format-specific differences.
 
 PDF and image parsing uses PDFium/Pillow plus Ovis. Images include PNG, JPEG, WebP, GIF, BMP, TIFF and JP2; multi-frame inputs retain their frames. Native conversion uses DocVortex 0.6.13 for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV and TSV. Native equations are retained when conversion succeeds; extracted raster content receives visual enrichment. Optional LibreOffice rendering supplies missing or questionable Office visual evidence. Extracted SVG assets are rasterized for inference while retaining their originals; inline SVG in HTML/EPUB is currently rejected because its preservation through native conversion cannot be verified.
 
@@ -16,16 +16,30 @@ Generated regression fixtures exercise DOCX, PPTX, XLSX, RTF, ODT, ODS, ODP, EPU
 
 The plugin sends tier and OCR mode. Its legacy effort and image-analysis controls are not transmitted on this API. Server configuration controls captioning, table reconstruction, image limits and resource budgets. The plugin's independent 200-page upload chunks remain independent jobs; tables crossing that boundary stay as fragments.
 
+The table describes tier behavior with optional descriptions and asset improvements enabled. Source-render defaults and overrides are maintained in [image, token and storage budgets](CONFIGURATION.md#image-token-and-storage-budgets).
+
 | Runtime behavior | Standard | Advanced |
 | --- | --- | --- |
 | Full-page extraction | Structured extraction | Structured extraction plus Markdown comparison |
-| Extraction source render | 200 DPI, at most 2880px long edge | 300 DPI, at most 4096px long edge |
+| Extraction source render | Configured Standard source limits | Configured Advanced source limits |
 | Localized recovery | When evidence warrants it | When evidence or comparison warrants it |
 | Cross-page tables | Adjacent candidates and backward recursive reconstruction | Same reconstruction with higher-resolution page evidence |
 | Meaningful figure descriptions | Enabled | Enabled |
 | Source SVG recovery and compression | Enabled | Enabled |
 
 Both tiers keep the same model image-token/context limits. Higher-resolution source-region crops can protect small text where whole-page preprocessing would discard detail. Advanced's comparison is a separate generation from the same model, not independent ground truth. Either adjacent page can nominate a table candidate through layout or transcription hints. Independent page parses feed the two-image reconstruction task; longer runs merge backwards with re-rendered intermediate pages. Heuristic skips and explicit model negatives are distinct. Ambiguous or unsupported merges retain the independent source fragments. Native documents continue to support Standard only.
+
+### Failure and fallback boundaries
+
+Failure handling depends on the stage; successful publication is not a guarantee that every optional improvement succeeded. Required visual inference, bbox crop materialization and final reference/ZIP publication failures propagate. Malformed or unresolved model content may receive localized notices with retained evidence instead of aborting an otherwise usable transcript.
+
+Current exceptions and limits:
+
+- **Generated captions:** PDF/image parsing can retain a source figure when a caption response is malformed or cannot be matched, recording diagnostics. Native caption enrichment can instead abort on missing/multiple candidates or a missing `<caption>`. A source image may already exist when this happens; these branches do not establish how often it occurs or that an earlier step failed. The agreed [follow-up direction](../TODO.md#1-fidelity-and-reliability) is consistent best-effort generated descriptions when faithful source graphics remain available; it is not yet implemented for all native paths. Backend inference failures are distinct from malformed caption content.
+- **Optional asset improvements:** compression and source-SVG recovery can retain the original asset with diagnostics when a candidate is unsuitable or an optional improvement fails. Their catches include some filesystem/rendering exceptions; these do not establish a blanket guarantee that every infrastructure error aborts.
+- **Native conversion fallback:** conversion failures can trigger LibreOffice visual recovery, with source/provenance safeguards and spreadsheet limitations. The current broad native-conversion exception catch needs review to distinguish recoverable conversion failures from infrastructure faults.
+
+Do not infer general backend or filesystem fault tolerance from these optional paths. The roadmap records the error-boundary audit separately from observed behavior.
 
 ### Headless LibreOffice
 

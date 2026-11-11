@@ -59,6 +59,14 @@ The default managed profile uses **Q8_0 model weights, a BF16 projector, BF16 KV
 | `batch_size` | Logical token batch size used during inference/prompt processing | 1024 |
 | `ubatch_size` | Physical compute microbatch; affects compute memory and throughput | 1024 |
 
+### Effective output limits
+
+`runtime.max_tokens` is the configured generation ceiling, not a promise that every pipeline stage requests that many tokens. The ordinary task adapter currently requests `min(runtime.max_tokens, 16384)` for structured/layout extraction, captions, separate Markdown readings and localized recovery. Cross-page reconstruction instead passes the configured `runtime.max_tokens` directly. Increasing the setting above 16384 therefore does not increase the requested output for ordinary tasks. These application-stage limits also apply when the inference endpoint is external.
+
+The runtime rejects a requested output limit that reaches/exceeds `context_size`, and managed preflight additionally accounts for prompt/image tokens when their geometry can be estimated. The stage-specific cap is current behavior; [the fidelity/configuration audit](../TODO.md#1-fidelity-and-reliability) will review it against task contracts and truncation evidence before deciding whether it should change.
+
+### Slots, batching and deadlines
+
 Token batching processes tokens within a request; continuous backend batching also serves independent requests across slots. Managed `--ctx-size` is `context_size * parallel_slots` with fixed per-slot allocation. External services manage their own slot allocation. No unrelated pages/crops are combined into a synthetic ID-based prompt.
 
 Inference has no overall queue/generation deadline by default. Optional `request_timeout` bounds it explicitly; connection and health checks retain short timeouts. Cancellation closes that job's requests without restarting a shared healthy backend. Four-slot BF16 full-attention KV is estimated at 1.5 GiB, excluding model/projector, recurrent state and compute allocations. The complete CUDA target is at most 5 GiB for headroom; this remains unmeasured.

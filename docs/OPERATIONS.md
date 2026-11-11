@@ -20,7 +20,7 @@ Jobs run independently and pages submit independent requests to llama.cpp, which
 
 Default retention is 24 hours after terminal status or last result download; abandoned uploads expire after one hour. Failed-job work, including raw model responses, stays under the data directory's `failures/` until retention expires. Treat that directory as document data. Canceled unpublished work is removed. `max_upload_bytes` limits each file; `max_storage_bytes` bounds upload reservations plus published outputs. Temporary renders and retained failure diagnostics can consume additional space.
 
-See [resource settings](CONFIGURATION.md#resource-settings) for inference defaults, memory estimates and timeout behavior.
+See [resource settings](CONFIGURATION.md#resource-settings) for inference defaults, memory estimates and timeout behavior, and [effective output limits](CONFIGURATION.md#effective-output-limits) for stage-specific generation ceilings.
 
 No additional GPU models are loaded. CPU native extraction and rendering are practical; Ovis vision and generation on CPU are considerably slower. A historical Q6_K one-page structured request took about 44 seconds on the development machine; this is not a latency guarantee.
 
@@ -47,7 +47,6 @@ Select the actual storage directory if different. The helper reads files without
 Failed jobs also retain `job-context.json` and available raw diagnostics beneath `failures/<job_id>/` until normal retention removes them. Keep that directory or the completed result ZIP when available. For a quality problem that the model did not flag, provide the original attachment filename and affected page along with the logs and result ZIP; logging cannot detect every incorrect transcription.
 
 The persistent logs omit normal request bodies, authorization headers, prompts and raw transcription candidates. Configured application/inference API keys are redacted, including in tracebacks. Logs still contain document filenames, hashes, local evidence paths and exception/backend details; inspect them before sharing. Raw candidates and images remain in the existing per-job diagnostic artifacts rather than being copied wholesale into the server log. HTTP errors before valid upload metadata is available may only identify the request route/status.
-
 
 With the local configuration prepared, probe LibreOffice and cwebp availability:
 
@@ -83,6 +82,6 @@ See [testing](TESTING.md) for prerequisites and commands and [remaining work](..
 
 ## Transcript images and bbox failures
 
-See [content rendering](CONTENT_RENDERING.md) for crop links and the accepted plugin cleanup limit: ordinary links resolve while their source images remain cached, but figure-cache pruning may remove those targets without retargeting the links. Use the viewing agent's visual tools afterward.
+See [content rendering](CONTENT_RENDERING.md) for crop links and the accepted plugin cleanup limit: registered ordinary links are intended to resolve while their source images remain cached, but figure-cache pruning can remove those targets without retargeting the links. The expanded controlled lifecycle harness is implemented but still awaits execution; actual Zotero viewing also remains unverified. Use the viewing agent's visual tools afterward.
 
-Malformed model bbox references now produce localized notices and diagnostics; valid references are materialized before delivery. Rendering/filesystem/backend errors still fail the job, and ZIP publication remains atomic. To reproduce a particular previously logged job, retain its source PDF or raw failure diagnostics as described above. Synthetic regressions establish the known failure class, not those individual jobs. OOM investigation remains separate.
+Malformed model bbox references produce localized notices and diagnostics; valid references are materialized before delivery. Required bbox rendering/materialization, inference and publication failures propagate, and ZIP publication remains atomic. Optional asset improvements can retain originals, and native conversion/caption paths have additional fallback differences; see [failure and fallback boundaries](PARSING.md#failure-and-fallback-boundaries). To reproduce a particular previously logged job, retain its source PDF or raw failure diagnostics as described above. Synthetic regressions establish the known failure class, not those individual jobs. OOM investigation remains separate.

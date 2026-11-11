@@ -44,7 +44,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.sdist]
 include = [
   "/src", "/tests", "/scripts", "/docs", "/licenses",
-  "/README.md", "/CHANGELOG.md", "/TODO.md", "/THIRD_PARTY_NOTICES.md",
+  "/README.md", "/FEATURES.md", "/CHANGELOG.md", "/TODO.md", "/THIRD_PARTY_NOTICES.md",
   "/pyproject.toml", "/uv.lock", "/config.example.toml",
 ]
 exclude = ["**/AGENTS.md"]

@@ -58,7 +58,7 @@ def _native_markdown(raw: str) -> str:
 
 
 def _semantic_signature(text: str) -> tuple[object, ...]:
-    """Compare ordered text and math while retaining exact table structure."""
+    """Compare ordered text/math and table cells, row order and span attributes."""
     from .pipeline import _table_signature
 
     signature: list[object] = []

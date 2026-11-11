@@ -4,7 +4,7 @@ This is the maintained reference for source semantics, reader annotations and de
 
 ## Source baseline and evidence
 
-The following source revisions were inspected for this change; these observations are not claims about later upstream releases.
+The following baseline records source revisions inspected for the 0.4.0 rendering work; these observations are not claims about later upstream releases. The documentation refactor does not refresh those upstream inspections.
 
 | Source | Revision and relevant paths |
 | --- | --- |
@@ -13,7 +13,9 @@ The following source revisions were inspected for this change; these observation
 | llm-for-zotero | [`e0553224af95e1f568def73bb03e795353c685fc`](https://github.com/yilewang/llm-for-zotero/tree/e0553224af95e1f568def73bb03e795353c685fc): `src/utils/mineruV1Result.ts`, `src/utils/mineruChunking.ts`, `src/services/mineru/mineruCache.ts`, `src/services/pdf/pdfFigureCropCache.ts` |
 | DocVortex | **0.6.13**, pinned by this application and within the inspected MinerU requirement `>=0.6.13,<0.7`. MinerU delegates Markdown rendering to `docvortex.render.markdown`. |
 
-The [Ovis model examples](https://huggingface.co/ATH-MaaS/OvisOCR3/blob/17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90/README.md), [technical report](https://arxiv.org/abs/2610.33066), [ATH-MaaS demo](https://huggingface.co/spaces/ATH-MaaS/OvisOCR3/tree/main) (`inference.py`, `pipeline.py`) and [alternate demo](https://huggingface.co/spaces/hugging-apps/ovisocr3/blob/main/app.py) distinguish task contracts from wrapper behavior. Both inspected demo generators use greedy decoding. Their token budgets and timeout/UI controls are wrapper choices, not a caption-specific verbosity control. This release changes no official prompt, response schema, sampling setting or task contract and adds no runtime dependency.
+The [Ovis model examples](https://huggingface.co/ATH-MaaS/OvisOCR3/blob/17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90/README.md), [technical report](https://arxiv.org/abs/2610.33066), [ATH-MaaS demo](https://huggingface.co/spaces/ATH-MaaS/OvisOCR3/tree/main) (`inference.py`, `pipeline.py`) and [alternate demo](https://huggingface.co/spaces/hugging-apps/ovisocr3/blob/main/app.py) distinguish task contracts from wrapper behavior. Both inspected demo generators use greedy decoding. Their token budgets and timeout/UI controls are wrapper choices, not a caption-specific verbosity control. The 0.4.0 rendering changes left official prompts, response schemas, sampling settings and task contracts unchanged and added no runtime dependency.
+
+The demo links above are navigation links to moving branches; their inspected checkout revisions were not recorded in this reference. They do not establish that current demo code matches the historical observations.
 
 Observed contract decisions:
 
@@ -62,23 +64,23 @@ Generated descriptions use ordinary links computed from the current registered a
 
 Discovery, strict validation and rewriting cover Markdown image embeds, ordinary local image-asset links and HTML images. Ordinary document links and external URLs are excluded. Compression, SVG replacement, native namespacing and final content-hash naming update ordered annotations and table-body projections as well as ordinary block content.
 
-Recognized bbox references in full-page structured text/tables/captions/notes and native visual responses are materialized while their input frame is known. Both Markdown and HTML forms work. Bounds must be finite, normalized and positive-area. A known crop frame maps back to its parent coordinates; native image inference can use its original oriented image directly. Asset identity includes the page and a unique registration ordinal. Invalid model references become localized unclear-image notices with diagnostics; rendering, filesystem and backend failures propagate. New bbox references from multi-page reconstruction are ambiguous and reject that merge.
+Recognized bbox references in full-page structured text/tables/captions/notes and native visual responses are materialized while their input frame is known. Both Markdown and HTML forms work. Bounds must be finite, normalized and positive-area. A known crop frame maps back to its parent coordinates; native image inference can use its original oriented image directly. Materialized bbox asset names include the page and a UUID; final delivery naming uses the registered asset content hash. Invalid model references become localized unclear-image notices with diagnostics; failures in the required crop rendering/materialization operation propagate. Optional asset improvements and native conversion/caption paths have different boundaries; see [failure and fallback policy](PARSING.md#failure-and-fallback-boundaries). New bbox references from multi-page reconstruction are ambiguous and reject that merge.
 
 Final validation still precedes atomic ZIP replacement. Failed validation/serialization leaves no partial ZIP and preserves any existing publication. Synthetic regressions establish the formerly unmaterialized bbox failure class. **The three previously logged jobs have not been individually reproduced**: their source PDFs or retained raw diagnostics are still required. OOM remediation is outside this release.
 
 ## Unchanged-plugin lifecycle and its limit
 
-The existing integration harness exercises the actual unchanged plugin functions, with controlled server responses and an in-memory Gecko filesystem for cleanup:
+The expanded integration harness is implemented to exercise the actual unchanged plugin functions, with controlled server responses and an in-memory Gecko filesystem for cleanup. Its execution remains outstanding; the following are implemented assertions and source-informed expectations, not a recorded passing lifecycle run:
 
-1. Server materialization, compression, final naming and strict validation keep registered links resolvable.
+1. The controlled server fixture supplies validated, finally named assets and crop links. Separate Python regressions cover materialization, compression and reference transformations; this plugin harness does not run real extraction or compression.
 2. V1 normalization rewrites ordinary asset destinations into the plugin image namespace.
 3. Cache normalization handles collisions and long path components, rewriting destinations with the same map as assets.
 4. Chunk merging namespaces assets and their ordinary links, retaining separate chunk identities.
 5. Image-embed stripping removes embeds while ordinary crop links remain. Targets resolve while source images remain cached.
 6. A matching, complete PDF figure-cache manifest enables source-image pruning. The integration asserts that links can remain in `full.md` while their original targets disappear, and that no automatic link retargeting occurs. An incomplete cache must not trigger this pruning.
 
-The viewing agent must use its own visual tools when the plugin has removed the source crop. This accepted limitation does not justify modifying the plugin or adding a lifecycle warning to every cue. The controlled harness does not exercise Zotero GUI rendering or actual PDF figure extraction quality. Run the plugin integration with the prerequisites in [TESTING.md](TESTING.md); missing prerequisites must be reported as unverified, not passed.
+The viewing agent must use its own visual tools when the plugin has removed the source crop; actual viewing-agent access still needs deployment validation. This accepted limitation does not justify modifying the plugin or adding a lifecycle warning to every cue. The controlled harness does not exercise Zotero GUI rendering or actual PDF figure extraction quality. Run the plugin integration with the prerequisites in [TESTING.md](TESTING.md); missing prerequisites must be reported as unverified, not passed.
 
 ## Validation scope
 
-Generated temporary artifacts and controlled responses test semantics and the failure class without private document contents. These checks do not establish corpus accuracy or 6 GB CUDA headroom. Real CUDA, the private failing-job reproductions, host LibreOffice/Flatpak and actual Zotero sessions remain user-owned deployment checks. Performance/MinerU optimization exploration remains high priority and deferred.
+Generated temporary artifacts and controlled responses test semantics and the failure class without private document contents. These checks do not establish corpus accuracy or 6 GB CUDA headroom. Real CUDA, the private failing-job reproductions, host LibreOffice/Flatpak and actual Zotero sessions remain user-owned deployment checks. See the [engineering directions](../TODO.md#engineering-directions) for separate fidelity/reliability, Advanced quality/performance, shared efficiency, native Advanced and optional lower-effort tracks.

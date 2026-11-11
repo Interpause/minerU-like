@@ -79,7 +79,7 @@ Real deployment validation still needs a representative document corpus and an a
 
 The focused rendering, pipeline, native, table and asset tests generate their own temporary inputs. They exercise source order, full captions, furniture/counters, code/math preservation, bbox coordinates (including rotated PDF and cropped inputs), reference transformations and atomic publication. See [content rendering](CONTENT_RENDERING.md) for the source baseline and limits.
 
-The extended existing plugin test invokes V1 normalization through the controlled server, cache collision/length normalization, chunk merging, embed stripping, PDF crop-cache writers and source-image pruning. Gecko filesystem calls use an in-memory adapter; the plugin source is unchanged. It asserts that crop links resolve before pruning and can remain dangling afterward, without retargeting. Run with Node 26+, TypeScript and fflate installed as described above:
+The expanded plugin harness is implemented but its lifecycle execution remains unverified. It is designed to invoke V1 normalization through the controlled server, cache collision/length normalization, chunk merging, embed stripping, PDF crop-cache writers and source-image pruning. Gecko filesystem calls use an in-memory adapter; the plugin source is unchanged. Its assertions check that crop links resolve before pruning and can remain dangling afterward, without retargeting. Separate Python tests cover server materialization/compression; the plugin harness uses a controlled parser. Run with Node 26+, TypeScript and fflate installed as described above:
 
 ```bash
 uv run --locked python scripts/run_tests.py --plugin -q tests/integration/test_plugin_client.py
