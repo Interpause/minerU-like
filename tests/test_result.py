@@ -41,13 +41,13 @@ def test_plugin_artifact_retains_generated_caption(tmp_path: Path) -> None:
             < markdown.index("![image]")
             < markdown.index(description)
         )
-        assert "[AI img desc]" in markdown
+        assert "AI img desc" in markdown
         assert set(image_references(markdown)) == {"images/figure.png"}
         structured = json.loads(archive.read("structured_content.json"))
         block = structured["pages"][0]["blocks"][0]
         assert block["captions"][0] == {"content": "Figure 1. Original"}
         assert description in block["captions"][1]["content"]
-        assert "[AI img desc]" in block["captions"][1]["content"]
+        assert "AI img desc" in block["captions"][1]["content"]
         assert "annotations" not in block
         assert archive.read("images/figure.png") == image.read_bytes()
 

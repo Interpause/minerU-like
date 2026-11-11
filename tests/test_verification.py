@@ -205,7 +205,7 @@ async def test_targeted_formula_must_be_one_framed_expression(context: Path) -> 
     for response in ("nonsense", "$$x$$ $$y$$", "The answer is x"):
         page = Page(0, [Block("equation", "$x+$", bbox=(0, 0, 1, 1))])
         await verify_suspicious_regions(Pipeline(region=response), page, context, [])
-        assert page.blocks[0].content.startswith("[Unclear formula")
+        assert "Unclear formula" in page.blocks[0].content
 
 
 @pytest.mark.asyncio
@@ -256,7 +256,7 @@ async def test_unsafe_or_missing_crop_retains_no_broken_formula(context: Path) -
     for bbox in (None, (0.0, 0.0, 1.0, 1.0)):
         page = Page(0, [Block("equation", "x_{", bbox=bbox)])
         await verify_suspicious_regions(Pipeline(), page, context, [], lambda **kwargs: None)
-        assert page.blocks[0].content.startswith("[Unclear formula")
+        assert "Unclear formula" in page.blocks[0].content
 
 
 @pytest.mark.asyncio
@@ -352,7 +352,7 @@ async def test_formula_placeholder_renders_as_plain_text(context: Path) -> None:
     assert block.type == "text"
     assert block.metadata["verification_original_type"] == "inline_formula"
     assert block.markdown() == block.content
-    assert block.content.startswith("[Unclear formula")
+    assert "Unclear formula" in block.content
 
 
 def test_single_atom_script_braces_are_presentation_only() -> None:

@@ -134,16 +134,16 @@ def test_ordered_provenance_keeps_evidence_and_full_generated_caption() -> None:
         ],
     )
     md = block.markdown()
-    assert md.index("Above") < md.index("![image]") < md.index("Below") < md.index("[AI img desc]")
+    assert md.index("Above") < md.index("![image]") < md.index("Below") < md.index("AI img desc")
     assert caption in md and "[crop](images/final.webp)" in md
     assert set(image_references(md)) == {"images/final.webp"}
     source = block.markdown(reader=False)
     assert "Above" in source and "Below" in source
-    assert "[Caption]" not in source and caption not in source
+    assert "Caption" not in source and caption not in source
     structured = DocumentResult([Page(0, [block])]).structured()["pages"][0]["blocks"][0]
     assert "annotations" not in structured
     assert structured["captions"][0] == {"content": "Above"}
-    assert "[AI img desc]" in structured["captions"][1]["content"]
+    assert "AI img desc" in structured["captions"][1]["content"]
 
 
 def _pages(
@@ -177,7 +177,7 @@ def test_coverage_gaps_odd_even_offsets_and_roman_numbering() -> None:
     assert "pg 2, 4, 6: Even" in result.markdown()
     assert "pg 7: Other" in result.markdown()
     counters = DocumentResult(_pages(["Page 9 / 20", "Page 10 / 20", "Page 11 / 20"]))
-    assert counters.markdown().count("[Running header") == 1
+    assert counters.markdown().count("Running header") == 1
     assert "1–3→9–11" in counters.markdown()
     roman = DocumentResult(_pages(["i", "ii", "iii"], "number"))
     assert "1–3→i–iii" in roman.markdown()
@@ -214,7 +214,10 @@ def test_geometry_native_and_excluded_roles_prevent_inferred_collapse() -> None:
         == 6
     )
     assert (
-        DocumentResult(_pages(["Caption"] * 6, "figure_title")).markdown().count("[Caption]") == 6
+        DocumentResult(_pages(["Figure 7. Original caption"] * 6, "figure_title"))
+        .markdown()
+        .count("Figure 7. Original caption")
+        == 6
     )
     pages = _pages(["Drifting"] * 3)
     pages[-1].blocks[0].bbox = (0.16, 0.01, 0.96, 0.035)

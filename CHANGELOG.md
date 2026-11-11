@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Consolidate duplicate fallback-image, three-page reconstruction, repetition-cleanup and small-mark fidelity scenarios without dropping their distinct failure modes. Retain separate cancellation/ownership, bbox, math, source-isolation, native-rejection and legacy-override checks.
+- Use representative Ovis category inputs and current typed generated-caption ZIP fixtures. Centralize exact annotation examples; allow additive health fields and unordered schema requirements. Route fake model replies by official task prompts and generated image content instead of temporary filenames, while retaining deliberate runtime/model contracts.
+- Reduce the unchanged-plugin matrix from 15 to 7 combinations, retaining all tier/OCR choices and PNG/WebP/SVG coverage. Select detailed crop lifecycle checks for the three Standard format cases.
+- Inventory changes from 305 cases in 219 functions to 302 cases in 215 functions: eight plugin cross-combinations and one repeated table scenario are removed, while existing fallback, cleanup and fidelity examples become separately reported parameter cases. The normal suite passes with **290 passed, 12 skipped** and two existing Pillow deprecation warnings; Ruff lint/format, advisory ty and JavaScript syntax checks pass. Plugin execution, real cwebp, host Flatpak and live backend checks remain unverified because their integration prerequisites/opt-ins are absent. Production code, dependency versions and release tags are unchanged.
+
 ## 0.4.0 — 2026-11-11
 
 - Centralize complete reader annotations, preserve full generated captions with dynamic ordinary crop links, retain ordered source captions/notes, and omit generated-only Mermaid while keeping raw diagnostics. Preserve native list/index markers, source code/math and explicit heading levels.

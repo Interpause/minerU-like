@@ -61,6 +61,14 @@ uv run --locked pytest -q tests/integration/test_plugin_client.py
 
 Direct pytest does not create the runner's transcript log. The direct pytest invocation reports skips normally; use `--all` on the runner when a no-skips result is required.
 
+## Coverage organization
+
+Keep focused behavior tests and integration tests when they exercise different wiring, ownership or publication boundaries. API cancellation, backend request cancellation, encoder cleanup and SVG-worker publication are separate scenarios. Malformed bbox bounds, mathematical structure, conservative native rejection, source isolation and atomic publication also retain distinct cases.
+
+Exact annotation grammar and cues are pinned in the shared presentation test. Other tests primarily check content, source order, provenance, asset destinations and localized notices. Intentional runtime defaults, model sampling, backend commands and geometry remain contracts; temporary crop filenames, JSON-schema list ordering and harmless additive health fields are not contracts. The Ovis category matrix uses representative content for every category. Repeated fallback, recursive-table, cleanup and fidelity examples share focused scenarios or parameterized groups.
+
+The unchanged-plugin matrix covers seven combinations: all five existing tier/OCR choices with PNG (Standard/auto, Advanced/auto, Flash/auto, Basic/forced OCR and Auto/forced OCR), plus Standard/auto with WebP and SVG. Detailed normalization, chunk merging, embed stripping, figure-cache writing and pruning run for the three Standard format cases. The other combinations verify protocol routing and returned artifacts. Eight redundant tier-by-format combinations are omitted; real host and model validation remain separate.
+
 ## What the live checks establish
 
 The live suite verifies both OvisOCR3 EOS tokens with token-biased requests, requests more images than configured slots, cancels a request while a sibling completes, and retains token-limit metadata. It does not change the backend stop configuration. CUDA runs sample the managed process memory and check a 5 GiB small-image smoke budget; this does not establish a peak for dense pages, two-image reconstruction or sustained jobs. External-server memory must be measured by its operator. Evidence is saved under the configured data directory at `validation/live-runtime.json`.
