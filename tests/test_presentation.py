@@ -195,3 +195,11 @@ def test_table_body_projection_preserves_notes_order_and_assets(tmp_path: Path) 
     assert md.index("First") < md.index("Note") < md.index("Intervening") < md.index("Second")
     assert "[Table image 1] [crop](images/x.png)" in md
     assert result.structured()["pages"][0]["blocks"][0]["content"] == source
+
+
+def test_rendered_supplements_attached_to_logical_units_do_not_collapse() -> None:
+    pages = _pages(["Renderer header"] * 5)
+    for page in pages:
+        page.metadata["page_boundary"] = "logical"
+        page.blocks[0].metadata["source"] = "libreoffice_visual_supplement"
+    assert DocumentResult(pages).markdown().count("Renderer header") == 5

@@ -118,7 +118,8 @@ def furniture_projection(pages: list[Page]) -> dict[tuple[int, int], str]:
                     "Running " + role, block.content, location=f"pg {page.page_idx + 1}"
                 )
             if (
-                block.content.startswith("[Unclear")
+                page.metadata.get("page_boundary") == "logical"
+                or block.content.startswith("[Unclear")
                 or block.bbox is None
                 or block.metadata.get("source") == "native"
             ):

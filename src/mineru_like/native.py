@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 from .config import Settings
 from .contracts import Inference, Payload
-from .presentation import Annotation, list_item
+from .presentation import Annotation, annotation, list_item
 from .result import Block, DocumentResult, Page
 from .verification import VerificationPipeline, _units
 
@@ -904,7 +904,10 @@ async def parse_native(
                         blocks=[
                             Block(
                                 type="text",
-                                content=f"[Visual supplement from rendered page {renderer_page}; source location not matched]",
+                                content=annotation(
+                                    "Visual supplement",
+                                    location=f"rendered page {renderer_page}; source location not matched",
+                                ),
                                 metadata={"source": "libreoffice_visual_supplement"},
                             ),
                             *selected,
