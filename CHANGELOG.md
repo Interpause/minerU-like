@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-11
 
 - Centralize complete reader annotations, preserve full generated captions with dynamic ordinary crop links, retain ordered source captions/notes, and omit generated-only Mermaid while keeping raw diagnostics. Preserve native list/index markers, source code/math and explicit heading levels.
 - Collapse corroborated physical-page running furniture with exact page coverage and verified Arabic/Roman counter progression; preserve every original structured record.
 - Replace production whole-document table overrides with typed body projections, preserving captions, notes, intervening prose and original fragments. Reject ambiguous reconstructed image provenance.
 - Materialize Markdown/HTML bbox image references in structured and native visual paths with known coordinate frames. Invalid bounds become local notices; infrastructure errors propagate and ZIP publication stays atomic.
 - Carry ordinary image links, ordered annotations and projection references through SVG replacement, compression and final naming. Extend the unchanged-plugin harness through normalization, chunk merging, embed stripping and expected post-prune dangling links. See [rendering contracts](docs/CONTENT_RENDERING.md) for source revisions, evidence limits and remaining host checks.
+- Set shared application/package/lock metadata to **0.4.0**. Restrict source distribution contents to public project areas so untracked private inputs and agent instructions are excluded.
+- Validation on Python 3.12: **285 passed, 20 skipped**, with two existing Pillow deprecation warnings. Ruff lint/format and advisory ty pass; all 18 prompts match both the previous release and the pinned Ovis source byte-for-byte. The expanded plugin harness passes JavaScript syntax checking but remains unexecuted: TypeScript/fflate are missing and nono denied npm's default cache write. The strict `--all` runner fails its JavaScript prerequisite check, rather than claiming a complete integration pass. Real cwebp, live inference, host LibreOffice/Flatpak, CUDA/corpus, the three private failing-job reproductions and actual Zotero checks remain unverified for this release.
 
 ## 0.3.1 — 2026-11-06
 
