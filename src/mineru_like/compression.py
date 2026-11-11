@@ -24,7 +24,7 @@ from PIL import Image, PngImagePlugin
 
 from .config import CompressionSettings, Settings
 from .fidelity import Fidelity, compare
-from .result import DocumentResult
+from .result import DocumentResult, image_references, transform_markup
 
 log = logging.getLogger(__name__)
 
@@ -83,13 +83,7 @@ def _preset(image: Image.Image, kind: str, overrides: dict[str, str]) -> str:
 
 
 def _destinations(text: str | None, name: str) -> bool:
-    # Restrict replacement to Markdown link destinations, including angle brackets and titles.
-    pattern = r"(\]\(\s*<?)" + re.escape(name) + r"(?=>?(?:\s|\)))"
-    html_pattern = r"(?i)(\bsrc\s*=\s*[\"\x27])" + re.escape(name) + r"(?=[\"\x27])"
-    return (
-        re.search(pattern, text or "") is not None
-        or re.search(html_pattern, text or "") is not None
-    )
+    return name in image_references(text or "")
 
 
 @overload
@@ -103,18 +97,27 @@ def _replace(text: None, old: str, new: str) -> None: ...
 def _replace(text: str | None, old: str, new: str) -> str | None:
     if not text:
         return text
-    pattern = r"(\]\(\s*<?)" + re.escape(old) + r"(?=>?(?:\s|\)))"
-    text = re.sub(pattern, lambda m: m.group(1) + new, text)
-    html_pattern = r"(?i)(\bsrc\s*=\s*[\"\x27])" + re.escape(old) + r"(?=[\"\x27])"
-    return re.sub(html_pattern, lambda m: m.group(1) + new, text)
+
+    def rewrite(value: str) -> str:
+        pattern = r"(\]\(\s*<?)" + re.escape(old) + r"(?=>?(?:\s|\)))"
+        value = re.sub(pattern, lambda m: m.group(1) + new, value)
+        html_pattern = r"(?i)(\bsrc\s*=\s*[\"\x27])" + re.escape(old) + r"(?=[\"\x27])"
+        value = re.sub(html_pattern, lambda m: m.group(1) + new, value)
+        unquoted = r"(?i)(\bsrc\s*=\s*)" + re.escape(old) + r"(?=[\s>])"
+        return re.sub(unquoted, lambda m: m.group(1) + '"' + new + '"', value)
+
+    return transform_markup(text, rewrite)
 
 
 def _texts(result: DocumentResult) -> Iterator[str]:
+    for projection in result.table_bodies:
+        yield projection.content
     if result.markdown_override:
         yield result.markdown_override
     for page in result.pages:
         for block in page.blocks:
             yield block.content
+            yield from (a.content for a in block.annotations)
             yield from block.captions
             yield from block.footnotes
 
@@ -272,7 +275,11 @@ def _run(
 
     original = result
     result = DocumentResult(
-        copy.deepcopy(original.pages), dict(original.assets), [], original.markdown_override
+        copy.deepcopy(original.pages),
+        dict(original.assets),
+        [],
+        original.markdown_override,
+        copy.deepcopy(original.table_bodies),
     )
     _check_canceled(event)
     workdir = Path(workdir)
@@ -340,9 +347,12 @@ def _run(
             for block in blocks:
                 if block.image_source == name:
                     block.image_source = new_name
+                block.rewrite_annotations(lambda text: _replace(text, name, new_name))
                 block.content = _replace(block.content, name, new_name)
                 block.captions = [_replace(s, name, new_name) for s in block.captions]
                 block.footnotes = [_replace(s, name, new_name) for s in block.footnotes]
+            for projection in result.table_bodies:
+                projection.content = _replace(projection.content, name, new_name)
             result.markdown_override = _replace(result.markdown_override, name, new_name)
             texts = list(_texts(result))
             diagnostic.update(
@@ -367,10 +377,12 @@ def _run(
             for old, new in zip(old_page.blocks, new_page.blocks):
                 old.image_source = new.image_source
                 old.content = new.content
+                old.annotations = new.annotations
                 old.captions = new.captions
                 old.footnotes = new.footnotes
         original.assets.clear()
         original.assets.update(result.assets)
+        original.table_bodies = result.table_bodies
         original.markdown_override = result.markdown_override
         original.diagnostics.extend(result.diagnostics)
 

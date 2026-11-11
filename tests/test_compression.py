@@ -10,7 +10,8 @@ from PIL import Image, ImageDraw
 
 from mineru_like.compression import optimize_assets
 from mineru_like.config import Settings
-from mineru_like.result import Block, DocumentResult, Page
+from mineru_like.presentation import Annotation
+from mineru_like.result import Block, DocumentResult, Page, TableBodyProjection
 
 
 def settings(**overrides: object) -> Settings:
@@ -38,10 +39,17 @@ async def test_optimizes_and_updates_all_references(tmp_path: Path) -> None:
     image.save(source, compress_level=0)
     original = source.read_bytes()
     block = Block("image", "See ![inline](images/source.png)", image_source="images/source.png")
+    block.annotations = [Annotation("Caption", "[crop](images/source.png)", before=True)]
+    table = Block("table", "<table><tr><td>Source</td></tr></table>")
     result = DocumentResult(
-        [Page(0, [block])],
+        [Page(0, [block, table])],
         {"images/source.png": source},
         markdown_override="![figure](images/source.png)",
+        table_bodies=[
+            TableBodyProjection(
+                0, 1, '<table><tr><td><img src="images/source.png"></td></tr></table>'
+            )
+        ],
     )
     await optimize_assets(result, settings(), tmp_path)
     assert source.read_bytes() == original
@@ -50,6 +58,8 @@ async def test_optimizes_and_updates_all_references(tmp_path: Path) -> None:
     assert block.image_source in result.assets
     assert block.image_source in block.content
     assert block.image_source in result.markdown_override
+    assert block.image_source in block.annotations[0].content
+    assert block.image_source in result.table_bodies[0].content
     output = result.assets[block.image_source]
     assert output.stat().st_size <= len(original) * 0.9
     with Image.open(output) as actual:

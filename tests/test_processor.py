@@ -93,3 +93,29 @@ def test_rendered_region_basenames_cannot_collide_in_plugin_cache(tmp_path: Path
         block.image_source is not None and block.image_source in block.content for block in blocks
     )
     result.validate()
+
+
+def test_final_names_cover_ordered_annotations_and_projection_only_links(tmp_path: Path) -> None:
+    from mineru_like.presentation import Annotation
+    from mineru_like.result import TableBodyProjection
+
+    asset = tmp_path / "original.png"
+    Image.new("RGB", (10, 10), "blue").save(asset)
+    original = "images/original.png"
+    block = Block(
+        "table",
+        "<table><tr><td>Original</td></tr></table>",
+        annotations=[Annotation("Caption", f"See [crop]({original})", before=True)],
+    )
+    result = DocumentResult(
+        [Page(0, [block])],
+        {original: asset},
+        table_bodies=[
+            TableBodyProjection(0, 0, f'<table><tr><td><img src="{original}"></td></tr></table>')
+        ],
+    )
+    finalize_asset_names(result)
+    final = next(iter(result.assets))
+    assert final != original and original not in result.markdown()
+    assert final in block.annotations[0].content and final in result.table_bodies[0].content
+    result.validate()

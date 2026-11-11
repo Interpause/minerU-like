@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import tempfile
+import uuid
 from collections.abc import Callable
 from difflib import SequenceMatcher
 from html import unescape
@@ -16,6 +17,7 @@ from PIL import Image
 
 from .config import Settings
 from .contracts import Diagnostic
+from .presentation import unclear
 from .result import Block, Page
 
 T = TypeVar("T")
@@ -236,12 +238,12 @@ def _structured_region(raw: str) -> str:
 
 def _location(page: Page, block: Block) -> str:
     if block.bbox is None:
-        return f"p{page.page_idx + 1}"
+        return f"pg {page.page_idx + 1}"
     x1, y1, x2, y2 = block.bbox
     x, y = (x1 + x2) / 2, (y1 + y2) / 2
     vertical = "top" if y < 1 / 3 else "middle" if y < 2 / 3 else "bottom"
     horizontal = "left" if x < 1 / 3 else "center" if x < 2 / 3 else "right"
-    return f"p{page.page_idx + 1}, approx. {vertical}-{horizontal}"
+    return f"pg {page.page_idx + 1}, approx. {vertical}-{horizontal}"
 
 
 async def recover_formula(
@@ -298,6 +300,7 @@ async def _recover(
     stage: str,
     expected: str | None = None,
     inline_math: bool = False,
+    assets: dict[str, Path] | None = None,
 ) -> None:
     from .pipeline import PROMPTS
 
@@ -308,7 +311,7 @@ async def _recover(
             block.metadata["verification_original"] = original
             block.metadata["verification_original_type"] = block.type
             block.type = "text"
-            block.content = f"[Unclear formula; {_location(page, block)}; zoom if possible.]"
+            block.content = unclear("formula", _location(page, block))
         block.metadata["verification"] = {"status": "unresolved", "reason": "missing bounds"}
         diagnostics.append(
             {
@@ -322,6 +325,7 @@ async def _recover(
         )
         return
     candidate: str | None = None
+    candidate_image: bytes | None = None
     previous: bytes | None = None
     with tempfile.TemporaryDirectory(prefix="verify-", dir=Path(imagepath).parent) as directory:
         for view in range(2 if crop_pdf else 1):
@@ -378,6 +382,7 @@ async def _recover(
                 )
             except ValueError:
                 continue
+            candidate_image = data if "bbox_" in candidate else None
             if expected is None:
                 break
             agrees = (
@@ -427,13 +432,31 @@ async def _recover(
     if accepted:
         block.metadata["verification_original"] = original
         block.content = cast(str, candidate)
+        if not is_formula and assets is not None:
+            from .pipeline import _materialize_markdown_images
+
+            source = imagepath
+            if candidate_image is not None:
+                source = imagepath.parent / f"recovery-input-{uuid.uuid4().hex}.png"
+                await asyncio.to_thread(source.write_bytes, candidate_image)
+            block.content = await asyncio.to_thread(
+                _materialize_markdown_images,
+                block.content,
+                page.page_idx,
+                None,
+                source,
+                imagepath.parent,
+                pipeline.settings,
+                assets,
+                diagnostics=diagnostics,
+            )
     elif not valid_original and not accepted:
         kind = "formula" if is_formula else "text"
         block.metadata["verification_original"] = original
         if is_formula:
             block.metadata["verification_original_type"] = block.type
             block.type = "text"
-        block.content = f"[Unclear {kind}; {_location(page, block)}; zoom if possible.]"
+        block.content = unclear(kind, _location(page, block))
     block.metadata["verification"] = {
         "status": status,
         "independent": expected,
@@ -461,6 +484,7 @@ async def verify_page(
     *,
     crop_pdf: Callable[..., Path | None] | None = None,
     region_imagepath: Path | None = None,
+    assets: dict[str, Path] | None = None,
 ) -> Page:
     """Align a single independent reading in order and inspect only disputed blocks."""
     from .pipeline import PROMPTS
@@ -485,7 +509,7 @@ async def verify_page(
             }
         )
         return await verify_suspicious_regions(
-            pipeline, page, region_imagepath or imagepath, diagnostics, crop_pdf
+            pipeline, page, region_imagepath or imagepath, diagnostics, crop_pdf, assets=assets
         )
     left: list[str] = []
     owners: list[int] = []
@@ -553,6 +577,7 @@ async def verify_page(
                 "advanced_region",
                 expected or None,
                 inline_math=inline_math,
+                assets=assets,
             )
         )
     if recoveries:
@@ -566,6 +591,7 @@ async def verify_page(
         diagnostics,
         crop_pdf,
         excluded=set(differences),
+        assets=assets,
     )
     diagnostics.append(
         {
@@ -586,6 +612,7 @@ async def verify_suspicious_regions(
     crop_pdf: Callable[..., Path | None] | None = None,
     *,
     excluded: set[int] | None = None,
+    assets: dict[str, Path] | None = None,
 ) -> Page:
     """Recover malformed content locally; ordinary text does not trigger a reread."""
     recoveries = []
@@ -617,6 +644,7 @@ async def verify_suspicious_regions(
                     crop_pdf,
                     "standard_region",
                     inline_math=inline_math and resolution_risk,
+                    assets=assets,
                 )
             )
     if recoveries:

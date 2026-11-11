@@ -219,23 +219,18 @@ def _replace_references(result: DocumentResult, old: str, new: str) -> None:
     def replace(text: None) -> None: ...
 
     def replace(text: str | None) -> str | None:
-        if not text:
-            return text
-        text = _replace(text, old, new)
-        return re.sub(
-            r'(\bsrc\s*=\s*["\'])' + re.escape(old) + r'(?=["\'])',
-            lambda match: match.group(1) + new,
-            text,
-            flags=re.I,
-        )
+        return _replace(text, old, new)
 
     for page in result.pages:
         for block in page.blocks:
             if block.image_source == old:
                 block.image_source = new
+            block.rewrite_annotations(lambda text: replace(text) or "")
             block.content = replace(block.content)
             block.captions = [replace(text) for text in block.captions]
             block.footnotes = [replace(text) for text in block.footnotes]
+    for projection in result.table_bodies:
+        projection.content = replace(projection.content) or ""
     result.markdown_override = replace(result.markdown_override)
 
 

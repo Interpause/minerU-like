@@ -207,3 +207,73 @@ async def test_uncorroborated_native_formula_retains_original_asset(tmp_path: Pa
         d.get("stage") == "native_semantic_corroboration" and d.get("status") == "unresolved"
         for d in result.diagnostics
     )
+
+
+@pytest.mark.asyncio
+async def test_native_visual_nested_bbox_and_source_annotation_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    import docvortex
+
+    source = tmp_path / "source.html"
+    source.write_text("<html></html>")
+    asset = tmp_path / "asset.png"
+    Image.new("RGB", (60, 60), "black").save(asset)
+
+    class NativeResult:
+        diagnostics = []
+        assets = {"images/native.png": asset.read_bytes()}
+
+        def to_dict(self) -> Payload:
+            return {
+                "pages": [
+                    {
+                        "blocks": [
+                            {
+                                "type": "image",
+                                "content": [
+                                    {"type": "image_caption", "content": "Above"},
+                                    {"type": "image_body", "image_path": "images/native.png"},
+                                    {"type": "image_footnote", "content": "Below"},
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(docvortex, "parse", lambda *args, **kwargs: NativeResult())
+
+    class Runtime:
+        async def infer(
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
+        ) -> str:
+            return json.dumps(
+                [
+                    {
+                        "bbox": [0, 0, 1000, 1000],
+                        "category": "table",
+                        "content": '<table><tr><td>Cell<img src="images/bbox_0_0_500_500.jpg"></td></tr></table>',
+                    }
+                ]
+            )
+
+    result = await Pipeline(Settings(captioning=False), Runtime()).parse(
+        source, source.name, "auto", "standard", tmp_path / "out"
+    )
+    result.validate()
+    assert len(result.assets) == 2
+    md = result.markdown()
+    assert md.index("Above") < md.index("![image]") < md.index("Below")
+    assert "bbox_0_0_500" not in md and "[Table image 1]" in md
+    block = result.structured()["pages"][0]["blocks"][0]
+    assert block["captions"] == [{"content": "Above"}] and block["footnotes"] == [
+        {"content": "Below"}
+    ]

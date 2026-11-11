@@ -15,7 +15,7 @@ from typing import Any, cast
 from PIL import Image
 
 from .contracts import Inference
-from .result import Block, DocumentResult, Page
+from .result import Block, DocumentResult, Page, TableBodyProjection, image_references
 from .schemas import cross_page_schema
 
 PROMPT = Path(__file__).parent / "prompts" / "crosspage_table.txt"
@@ -41,10 +41,13 @@ def _validated(raw: str, fragments: list[str]) -> str | None:
     if item.get("source_pages") != [1, 2] or not isinstance(item.get("html"), str):
         raise ValueError("No unambiguous two-page table")
     merged = item["html"]
-    if not re.fullmatch(r"\s*<table\b[\s\S]*</table\s*>\s*", merged, re.I) or re.search(
-        r"<img\b", merged, re.I
-    ):
-        raise ValueError("Invalid or unsupported reconstructed table")
+    if not re.fullmatch(r"\s*<table\b[\s\S]*</table\s*>\s*", merged, re.I):
+        raise ValueError("Invalid reconstructed table")
+    source_images = Counter(name for fragment in fragments for name in image_references(fragment))
+    if Counter(image_references(merged)) != source_images or len(
+        re.findall(r"<img\b", merged, re.I)
+    ) != sum(len(re.findall(r"<img\b", fragment, re.I)) for fragment in fragments):
+        raise ValueError("Ambiguous reconstructed image provenance")
     cells_by_fragment = [_cells(fragment) for fragment in fragments]
     source = [cell for cells in cells_by_fragment for cell in cells]
     target = _cells(merged)
@@ -109,12 +112,36 @@ class _TableSanitizer(HTMLParser):
 def _page_representation(page: Page, table_index: int, merged: str) -> str:
     sections = []
     for index, block in enumerate(page.blocks):
+        if any(
+            reference
+            for text in [
+                block.content,
+                *block.captions,
+                *block.footnotes,
+                *(a.content for a in block.annotations),
+            ]
+            for reference in image_references(text)
+        ):
+            raise ValueError("Image-bearing recursive page rendering is unsupported")
+        sections.extend(
+            "<p>" + html.escape(a.content) + "</p>"
+            for a in block.annotations
+            if a.before and not a.generated
+        )
         if index == table_index:
             sections.append(merged)
         elif block.image_source:
             raise ValueError("Cannot preserve page image in recursive HTML rendering")
         else:
             sections.append("<p>" + html.escape(block.content) + "</p>")
+        sections.extend(
+            "<p>" + html.escape(text) + "</p>"
+            for text in [
+                *block.captions,
+                *block.footnotes,
+                *(a.content for a in block.annotations if not a.before and not a.generated),
+            ]
+        )
     return "<html><body>" + "".join(sections) + "</body></html>"
 
 
@@ -218,7 +245,7 @@ def _has_hint(page: Page) -> bool:
 
 def _markdown(page: Page, replacements: dict[tuple[int, int], str], page_no: int) -> str:
     text = "\n\n".join(
-        replacements.get((page.page_idx, n), block.markdown())
+        replacements.get((page.page_idx, n), block.markdown(reader=False))
         for n, block in enumerate(page.blocks)
     )
     return re.sub(
@@ -342,15 +369,11 @@ async def reconstruct_tables(
             diagnostic.update(accepted=True, outcome="merged", source_pages=[idx, *pages])
         except (RuntimeError, TimeoutError):
             raise
-        except Exception as exc:
+        except ValueError as exc:
             diagnostic.update(outcome="uncertain", error=str(exc))
             right_image, right_pages = None, []
         result.diagnostics.append(diagnostic)
-    if replacements:
-        chunks = []
-        for page in result.pages:
-            chunks.append(f"<!-- page {page.page_idx + 1} -->")
-            for n, block in enumerate(page.blocks):
-                chunks.append(replacements.get((page.page_idx, n), block.markdown()))
-        result.markdown_override = "\n\n".join(chunks)
+    result.table_bodies = [
+        TableBodyProjection(page, block, body) for (page, block), body in replacements.items()
+    ]
     return merged_count

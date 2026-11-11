@@ -79,3 +79,35 @@ def test_titles_and_math_keep_plugin_semantics() -> None:
     assert "# Paper" in result.markdown() and "## #" not in result.markdown()
     assert "$x+1$" in result.markdown()
     assert "$$\nx^2\n$$" in result.markdown()
+
+
+def test_ordinary_image_links_validate_without_intercepting_document_links(tmp_path: Path) -> None:
+    from mineru_like.result import image_references
+
+    text = "[paper](paper.pdf) [site](https://example.org/image.png) [email](mailto:a@example.org) [crop](images/local.webp) ![missing](unknown)"
+    assert list(image_references(text)) == ["unknown", "images/local.webp"]
+    result = DocumentResult([Page(0, [Block("text", "[crop](images/missing.webp)")])])
+    target = tmp_path / "result.zip"
+    target.write_bytes(b"previous publication")
+    with pytest.raises(ValueError, match="Missing markup"):
+        result.write_zip(target)
+    assert target.read_bytes() == b"previous publication"
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_asset_syntax_in_source_code_is_literal(tmp_path: Path) -> None:
+    from mineru_like.compression import _replace
+    from mineru_like.config import Settings
+    from mineru_like.pipeline import _materialize_markdown_images
+    from mineru_like.result import image_references
+
+    literal = "![x](images/bbox_0_0_500_500.jpg)"
+    source = f"Example `{literal}`\n\n~~~text\n{literal}\n~~~\n"
+    assert list(image_references(source)) == []
+    assert (
+        _materialize_markdown_images(
+            source, 0, None, tmp_path / "missing.png", tmp_path, Settings(), {}
+        )
+        == source
+    )
+    assert _replace(source, "images/bbox_0_0_500_500.jpg", "images/replaced.png") == source

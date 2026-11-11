@@ -128,7 +128,7 @@ async def test_unreadable_formula_placeholder(context: Path) -> None:
     diagnostics: list[Diagnostic] = []
     await verify_suspicious_regions(pipeline, page, context, diagnostics)
     assert (
-        page.blocks[0].content == "[Unclear formula; p1, approx. middle-right; zoom if possible.]"
+        page.blocks[0].content == "[Unclear formula; pg 1, approx. middle-right; zoom if possible.]"
     )
     assert diagnostics[-1]["initial"] == r"x_{"
     assert len(page.blocks) == 1
@@ -415,3 +415,22 @@ async def test_benign_math_segmentation_skips_region_inference(context: Path) ->
     pipeline = Pipeline(r"For $a>0,b>0$ let $MPK$ apply at $t=1$.")
     await verify_page(pipeline, page, context, [])
     assert pipeline.stages == ["advanced_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_bbox_materializes_from_actual_submitted_crop(context: Path) -> None:
+    image = Image.new("RGB", (100, 100), "white")
+    for x in range(50, 100):
+        for y in range(50, 100):
+            image.putpixel((x, y), (0, 0, 255))
+    image.save(context)
+    content = "Recovered ![detail](images/bbox_0_0_500_500.jpg)"
+    pipeline = Pipeline(region=content)
+    page = Page(0, [Block("text", "???", bbox=(0.5, 0.5, 1, 1))])
+    assets: dict[str, Path] = {}
+    diagnostics: list[Diagnostic] = []
+    await verify_suspicious_regions(pipeline, page, context, diagnostics, assets=assets)
+    assert len(assets) == 1 and "bbox_0_0_500_500" not in page.blocks[0].content
+    with Image.open(next(iter(assets.values()))) as crop:
+        assert crop.size == (25, 25) and crop.getpixel((0, 0)) == (0, 0, 255)
+    assert page.blocks[0].metadata["verification"]["targeted"] == content

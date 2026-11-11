@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import html
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -18,6 +17,7 @@ from typing import Any, Protocol
 
 from .config import Settings
 from .contracts import Inference, Payload
+from .presentation import Annotation, list_item
 from .result import Block, DocumentResult, Page
 from .verification import VerificationPipeline, _units
 
@@ -225,7 +225,7 @@ def _native_formula_counts(value: Any) -> Counter[str]:
     return counts
 
 
-def _nested(value: Any, depth: int = 0) -> str:
+def _nested(value: Any, depth: int = 0, *, index: bool = False) -> str:
     """Keep nested list and index items in document order."""
     if not isinstance(value, list):
         return _inline(value)
@@ -236,15 +236,15 @@ def _nested(value: Any, depth: int = 0) -> str:
         kind = item.get("type", "")
         content = item.get("content", "")
         if kind in {"list", "index"}:
-            lines.append(_nested(content, depth + 1))
+            lines.append(_nested(content, depth + 1, index=index or kind == "index"))
         elif isinstance(content, list) and any(
             isinstance(v, dict) and v.get("type") in {"list", "index"} for v in content
         ):
-            lines.append(_nested(content, depth + 1))
+            lines.append(_nested(content, depth + 1, index=index or kind == "index"))
         else:
             text = _inline(content)
             if text:
-                lines.append("  " * depth + "- " + text)
+                lines.append(list_item(text, depth, index=index))
     return "\n".join(lines)
 
 
@@ -507,25 +507,26 @@ async def parse_native(
                     continue
                 if image_source and image_source not in assets:
                     raise ValueError(f"Native image asset is missing: {image_source}")
-                captions = [
-                    _inline(c.get("content", "")) for c in value if c["type"].endswith("_caption")
-                ]
-                footnotes = [
-                    _inline(c.get("content", "")) for c in value if c["type"].endswith("_footnote")
-                ]
                 blocks.append(
                     Block(
                         type=kind,
                         content=content,
                         bbox=bbox,
                         image_source=image_source,
-                        captions=captions,
-                        footnotes=footnotes,
+                        annotations=[
+                            Annotation(
+                                "Footnote" if c["type"].endswith("_footnote") else "Caption",
+                                _inline(c.get("content", "")),
+                                before=i < value.index(body),
+                            )
+                            for i, c in enumerate(value)
+                            if c["type"].endswith(("_caption", "_footnote"))
+                        ],
                         metadata={"source": "native"},
                     )
                 )
             elif kind in {"list", "index"}:
-                content = _nested(value)
+                content = _nested(value, index=kind == "index")
                 blocks.append(
                     Block(type=kind, content=content, bbox=bbox, metadata={"source": "native"})
                 )
@@ -564,6 +565,7 @@ async def parse_native(
         PROMPTS,
         _figure_kind,
         _ink_outside,
+        _materialize_markdown_images,
         _semantic_regions,
         _structured,
     )
@@ -585,6 +587,19 @@ async def parse_native(
                     raise ValueError(
                         "Unsupported source content: embedded image cannot be visually inspected"
                     ) from exc
+
+                for item in block.annotations:
+                    item.content = await asyncio.to_thread(
+                        _materialize_markdown_images,
+                        item.content,
+                        page.page_idx,
+                        None,
+                        inference_image,
+                        workdir,
+                        pipeline.settings,
+                        assets,
+                        diagnostics=diagnostics,
+                    )
 
                 def structured_nonempty(raw: str) -> list[Payload]:
                     parsed = _structured(raw)
@@ -621,7 +636,17 @@ async def parse_native(
                     enriched.append(
                         Block(
                             type=kind,
-                            content=region["content"],
+                            content=await asyncio.to_thread(
+                                _materialize_markdown_images,
+                                region["content"],
+                                page.page_idx,
+                                None,
+                                inference_image,
+                                workdir,
+                                pipeline.settings,
+                                assets,
+                                diagnostics=diagnostics,
+                            ),
                             metadata={
                                 "source": "visual_supplement",
                                 "source_image": block.image_source,
@@ -658,7 +683,11 @@ async def parse_native(
                     replacements = enriched[origin_index + 1 :]
                     if replacements:
                         replacements[0].captions[:0] = block.captions
+                        replacements[0].annotations[:0] = [a for a in block.annotations if a.before]
                         replacements[-1].footnotes.extend(block.footnotes)
+                        replacements[-1].annotations.extend(
+                            a for a in block.annotations if not a.before
+                        )
                     del enriched[origin_index]
                     converted_assets.add(block.image_source)
                     for replacement in replacements:
@@ -700,18 +729,23 @@ async def parse_native(
                 )
                 if not match or not match.group(1).strip():
                     raise ValueError("Native image caption was missing")
-                block.captions.append(
-                    "[AI-generated image description; supplemental] " + match.group(1).strip()
-                )
-                mermaid = re.search(
-                    r"<mermaid>(.*?)</mermaid>", candidates[0]["content"], re.I | re.S
-                )
-                if mermaid and mermaid.group(1).strip():
-                    block.captions.append(
-                        "[AI-generated diagram; supplemental]\n```mermaid\n"
-                        + html.unescape(mermaid.group(1)).strip()
-                        + "\n```"
+                block.annotations.append(
+                    Annotation(
+                        "AI img desc",
+                        await asyncio.to_thread(
+                            _materialize_markdown_images,
+                            match.group(1).strip(),
+                            page.page_idx,
+                            None,
+                            inference_image,
+                            workdir,
+                            pipeline.settings,
+                            assets,
+                            diagnostics=diagnostics,
+                        ),
+                        generated=True,
                     )
+                )
         page.blocks = enriched
     from .result import image_references
 
@@ -720,7 +754,7 @@ async def parse_native(
         name
         for page in pages
         for b in page.blocks
-        for text in (b.content, *b.captions, *b.footnotes)
+        for text in (b.content, *b.captions, *b.footnotes, *(a.content for a in b.annotations))
         for name in image_references(text)
     )
     assets = {
@@ -836,6 +870,7 @@ async def parse_native(
                     raise ValueError("Rendered visual asset is missing")
                 for old_name, asset_path in visual.assets.items():
                     new_name = f"libreoffice_visual/{region_index}/{old_name}"
+                    block.rewrite_annotations(lambda text: _replace(text, old_name, new_name))
                     block.content = _replace(block.content, old_name, new_name)
                     block.captions = [_replace(text, old_name, new_name) for text in block.captions]
                     block.footnotes = [

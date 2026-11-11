@@ -225,4 +225,4 @@ def test_fallback_keeps_materialized_graphics_only() -> None:
     )
     assert "![ok](images/ok.png)" in result
     assert "missing.png" not in result
-    assert "[Unclear graphic;" in result
+    assert "[Unclear image;" in result

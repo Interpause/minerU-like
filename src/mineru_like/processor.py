@@ -60,12 +60,15 @@ def finalize_asset_names(result: DocumentResult) -> None:
             if block.image_source
             else block.image_source
         )
+        block.rewrite_annotations(rewrite)
         block.content = rewrite(block.content)
         block.captions = [rewrite(s) for s in block.captions]
         block.footnotes = [rewrite(s) for s in block.footnotes]
         if block.metadata.get("source_image") in mapping:
             block.metadata["source_image"] = mapping[block.metadata["source_image"]]
     result.markdown_override = rewrite(result.markdown_override)
+    for projection in result.table_bodies:
+        projection.content = rewrite(projection.content)
     result.assets = assets
     result.diagnostics.append({"stage": "asset_names", "mapping": mapping})
 

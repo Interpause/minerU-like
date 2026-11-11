@@ -8,10 +8,12 @@ import hashlib
 import html
 import json
 import logging
+import math
 import re
 import shutil
 import threading
 import time
+import uuid
 from collections.abc import Callable, Collection, Coroutine, Iterable, Sequence
 from dataclasses import asdict
 from functools import partial
@@ -23,7 +25,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageOps
 from .config import Settings
 from .contracts import Diagnostic, Inference, Payload
 from .geometry import ImageGeometry, ovis_size
-from .result import Block, DocumentResult, Page
+from .presentation import Annotation, unclear
+from .result import Block, DocumentResult, Page, transform_markup
 from .schemas import cross_page_schema, layout_schema, structured_schema
 from .server_logging import record_diagnostic
 
@@ -374,28 +377,95 @@ def _materialize_markdown_images(
     workdir: Path,
     settings: Settings,
     assets: dict[str, Path],
+    *,
+    diagnostics: list[Diagnostic] | None = None,
+    frame: Sequence[float] | None = (0, 0, 1, 1),
 ) -> str:
-    def materialize(match: re.Match[str]) -> str:
-        box = [float(match.group(i)) for i in range(1, 5)]
-        name = f"images/page_{index}_fallback_graphic_{len(assets)}.png"
-        try:
-            source = _formula_crop(
-                pdf, index, box, image, workdir, 40000 + len(assets), settings, graphics=True
-            )
-            target = workdir / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-            assets[name] = target
-        except (ValueError, OSError):
-            return f"[Unclear graphic; p{index + 1}; zoom if possible.]"
-        return f"![image]({name})"
+    """Resolve model bbox destinations in the known input frame, retaining markup."""
+    resolved: dict[str, str] = {}
+    unresolved: set[str] = set()
 
-    text = re.sub(
-        r'<img\b[^>]*src=["\']images/bbox_(\d+)_(\d+)_(\d+)_(\d+)\.jpg["\'][^>]*>',
-        materialize,
+    def materialize(match: re.Match[str]) -> str:
+        markup = match.group(0)
+        if markup.lower().startswith("<img"):
+            markup = re.sub(
+                r"(\bsrc\s*=\s*)(?![\"'])([^\s>]+)",
+                lambda m: m[1] + '"' + m[2] + '"',
+                markup,
+                flags=re.I,
+            )
+        reference = re.search(r"(?:\./)?(?:images/)?bbox_[^\s<>\"'()]+", markup, re.I)
+        if reference is None:
+            return markup
+        value = reference.group(0)
+        if value in resolved:
+            return markup.replace(value, resolved[value])
+        try:
+            coordinates = re.fullmatch(
+                r"(?:\./)?(?:images/)?bbox_(.+)\.(?:jpg|jpeg|png|webp)", value, re.I
+            )
+            if coordinates is None:
+                raise ValueError("Malformed bbox image reference")
+            box = [float(v) for v in coordinates[1].split("_")]
+            if len(box) != 4 or not all(math.isfinite(v) for v in box):
+                raise ValueError("Nonfinite or malformed bbox bounds")
+            x0, y0, x1, y1 = box
+            if not (0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000):
+                raise ValueError("Invalid normalized bbox bounds")
+            if frame is None:
+                raise ValueError("Unknown inference coordinate frame")
+            fx0, fy0, fx1, fy1 = frame
+            if not (0 <= fx0 < fx1 <= 1 and 0 <= fy0 < fy1 <= 1):
+                raise ValueError("Unknown inference coordinate frame")
+            box = [
+                fx0 * 1000 + x0 * (fx1 - fx0),
+                fy0 * 1000 + y0 * (fy1 - fy0),
+                fx0 * 1000 + x1 * (fx1 - fx0),
+                fy0 * 1000 + y1 * (fy1 - fy0),
+            ]
+        except ValueError as exc:
+            if value in unresolved:
+                return ""
+            unresolved.add(value)
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "stage": "bbox_image",
+                        "page_idx": index,
+                        "status": "unresolved",
+                        "reference": value,
+                        "reason": str(exc),
+                    }
+                )
+            return unclear("image", f"pg {index + 1}")
+        # Rendering and filesystem failures are infrastructure errors, not model uncertainty.
+        identity = uuid.uuid4()
+        name = f"images/page_{index}_bbox_{identity.hex}.png"
+        source = _formula_crop(
+            pdf, index, box, image, workdir, identity.int, settings, graphics=True
+        )
+        target = workdir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        assets[name] = target
+        resolved[value] = name
+        if diagnostics is not None:
+            diagnostics.append(
+                {
+                    "stage": "bbox_image",
+                    "page_idx": index,
+                    "reference": value,
+                    "asset": name,
+                    "source_bounds": box,
+                }
+            )
+        return markup.replace(value, name)
+
+    text = transform_markup(
         text,
+        lambda value: re.sub(r"<img\b[^>]*>|!?\[[^\]]*\]\([^)]*\)", materialize, value, flags=re.I),
     )
-    return _fallback_image_references(text, assets)
+    return _fallback_image_references(text, assets, diagnostics=diagnostics, page_idx=index)
 
 
 def _prepare_page_images(
@@ -437,29 +507,72 @@ def _clean_markdown(text: str) -> str:
     return text
 
 
-def _fallback_image_references(text: str, known: Collection[str] = ()) -> str:
+def _fallback_image_references(
+    text: str,
+    known: Collection[str] = (),
+    *,
+    diagnostics: list[Diagnostic] | None = None,
+    page_idx: int | None = None,
+) -> str:
     """Do not publish model-suggested local image paths that were not materialized."""
+    unresolved: set[str] = set()
+
+    def notice(destination: str) -> str:
+        if destination in unresolved:
+            return ""
+        unresolved.add(destination)
+        if diagnostics is not None:
+            diagnostics.append(
+                {
+                    "stage": "image_reference",
+                    "page_idx": page_idx,
+                    "status": "unresolved",
+                    "reference": destination,
+                    "reason": "unmaterialized model image reference",
+                }
+            )
+        return unclear(
+            "image", f"pg {page_idx + 1}" if page_idx is not None else "recheck source page"
+        )
 
     def markdown(match: re.Match[str]) -> str:
         destination = match.group(1) or match.group(2)
-        if destination in known or re.match(r"^(?:https?:|data:|#)", destination, re.I):
+        if re.match(r"^(?:https?:|data:|#)", destination, re.I):
             return match.group(0)
-        return "[Unclear graphic; recheck source page; zoom if possible.]"
-
-    text = re.sub(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))[^)]*\)", markdown, text)
+        canonical = destination.removeprefix("./")
+        if canonical in known:
+            return match.group(0).replace(destination, canonical)
+        if not match.group(0).startswith("!") and Path(destination).suffix.lower() not in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".svg",
+        }:
+            return match.group(0)
+        return notice(destination)
 
     def html_image(match: re.Match[str]) -> str:
-        tag = match.group(0)
+        tag = re.sub(
+            r"(\bsrc\s*=\s*)(?![\"'])([^\s>]+)",
+            lambda m: m[1] + '"' + m[2] + '"',
+            match.group(0),
+            flags=re.I,
+        )
         src = re.search(r"\bsrc\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
-        if (
-            src
-            and src.group(1) not in known
-            and not re.match(r"^(?:https?:|data:|#)", src.group(1), re.I)
-        ):
-            return "[Unclear graphic; recheck source page; zoom if possible.]"
+        if src and not re.match(r"^(?:https?:|data:|#)", src.group(1), re.I):
+            canonical = src.group(1).removeprefix("./")
+            return (
+                tag.replace(src.group(1), canonical) if canonical in known else notice(src.group(1))
+            )
         return tag
 
-    return re.sub(r"<img\b[^>]*>", html_image, text, flags=re.I)
+    def clean(value: str) -> str:
+        value = re.sub(r"!?\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))[^)]*\)", markdown, value)
+        return re.sub(r"<img\b[^>]*>", html_image, value, flags=re.I)
+
+    return transform_markup(text, clean)
 
 
 def _assessment(raw: str) -> Payload:
@@ -896,6 +1009,7 @@ class Pipeline:
                         diagnostics,
                         recovery,
                         crop_pdf=crop_region,
+                        assets=assets,
                         region_imagepath=workdir / f"source-{page.page_idx}.png"
                         if suffix != ".pdf"
                         else None,
@@ -907,6 +1021,7 @@ class Pipeline:
                         workdir / f"page-{page.page_idx}.png",
                         diagnostics,
                         crop_pdf=crop_region,
+                        assets=assets,
                     )
 
             await _gather_cancel(verify_one(page) for page in pages)
@@ -1020,9 +1135,22 @@ class Pipeline:
                         x0 + box[2] * (x1 - x0) / 1000,
                         y0 + box[3] * (y1 - y0) / 1000,
                     ]
+                source_image = workdir / f"source-{page_index}.png"
+                content = await asyncio.to_thread(
+                    _materialize_markdown_images,
+                    item["content"],
+                    page_index,
+                    input_path if suffix == ".pdf" else None,
+                    source_image,
+                    workdir,
+                    self.settings,
+                    assets,
+                    diagnostics=diagnostics,
+                    frame=tuple(v / 1000 for v in crop_box) if crop_box else (0, 0, 1, 1),
+                )
                 block = Block(
                     "table",
-                    item["content"],
+                    content,
                     bbox=cast(
                         tuple[float, float, float, float], tuple(float(x) / 1000 for x in box)
                     ),
@@ -1121,7 +1249,7 @@ class Pipeline:
                     "markdown_fallback",
                 )
             except ValueError:
-                text = f"[Unclear content; p{idx + 1}; zoom if possible.]"
+                text = unclear("content", f"pg {idx + 1}")
             text = await asyncio.to_thread(
                 _materialize_markdown_images,
                 text,
@@ -1131,6 +1259,7 @@ class Pipeline:
                 workdir,
                 self.settings,
                 assets,
+                diagnostics=diagnostics,
             )
             diagnostics.append(
                 {
@@ -1208,6 +1337,18 @@ class Pipeline:
                     source_bbox=bbox,
                     source_pdf=bool(pdf_path),
                 )
+            if source is None:
+                content = await asyncio.to_thread(
+                    _materialize_markdown_images,
+                    content,
+                    idx,
+                    pdf_path,
+                    original_image or path,
+                    workdir,
+                    self.settings,
+                    assets,
+                    diagnostics=diagnostics,
+                )
             blocks.append(Block(kind, content, bbox=bbox, image_source=source, metadata=metadata))
         await asyncio.to_thread(
             _flag_resolution_risks,
@@ -1223,19 +1364,24 @@ class Pipeline:
             blocks.append(
                 Block(
                     "text",
-                    f"[Unclear content; p{idx + 1}; zoom if possible.]",
+                    unclear("content", f"pg {idx + 1}"),
                     metadata={"incomplete": True},
                 )
             )
-        attached = set()
+        attached: set[int] = set()
         for n, block in enumerate(blocks):
             if block.metadata.get("category") != "figure_title":
                 continue
             adjacent = [
-                blocks[j] for j in (n - 1, n + 1) if 0 <= j < len(blocks) and blocks[j].image_source
+                (j, blocks[j])
+                for j in (n - 1, n + 1)
+                if 0 <= j < len(blocks) and blocks[j].image_source
             ]
             if len(adjacent) == 1:
-                adjacent[0].captions.append(block.content)
+                target_index, target = adjacent[0]
+                target.annotations.append(
+                    Annotation("Caption", block.content, before=n < target_index)
+                )
                 attached.add(n)
         blocks = [block for n, block in enumerate(blocks) if n not in attached]
         if self.settings.captioning and any(
@@ -1318,7 +1464,17 @@ class Pipeline:
                 block.type = {"display_formula": "equation"}.get(
                     proposed[0]["category"], proposed[0]["category"]
                 )
-                block.content = semantic[0]["content"]
+                block.content = await asyncio.to_thread(
+                    _materialize_markdown_images,
+                    semantic[0]["content"],
+                    idx,
+                    None,
+                    image_path,
+                    workdir,
+                    self.settings,
+                    assets,
+                    diagnostics=diagnostics,
+                )
                 block.image_source = None
                 block.metadata.update(
                     category=proposed[0]["category"], representation="corroborated_structure"
@@ -1360,20 +1516,24 @@ class Pipeline:
                         r"<caption>(.*?)</caption>", candidates[0]["content"], re.I | re.S
                     )
                     if match and match.group(1).strip():
-                        block.captions.append(
-                            "[AI-generated image description; supplemental] "
-                            + match.group(1).strip()
+                        block.annotations.append(
+                            Annotation(
+                                "AI img desc",
+                                await asyncio.to_thread(
+                                    _materialize_markdown_images,
+                                    match.group(1).strip(),
+                                    idx,
+                                    pdf_path,
+                                    original_image or path,
+                                    workdir,
+                                    self.settings,
+                                    assets,
+                                    diagnostics=diagnostics,
+                                ),
+                                generated=True,
+                            )
                         )
                         generated = True
-                    mermaid = re.search(
-                        r"<mermaid>(.*?)</mermaid>", candidates[0]["content"], re.I | re.S
-                    )
-                    if mermaid and mermaid.group(1).strip():
-                        block.captions.append(
-                            "[AI-generated diagram; supplemental]\n```mermaid\n"
-                            + html.unescape(mermaid.group(1)).strip()
-                            + "\n```"
-                        )
                 if not generated:
                     diagnostics.append(
                         {

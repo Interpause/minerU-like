@@ -5,19 +5,73 @@ import os
 import re
 import tempfile
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
 from .contracts import Diagnostic, Payload
+from .presentation import Annotation, annotation, visual_description
+
+
+def transform_markup(text: str, transform: Callable[[str], str]) -> str:
+    """Apply asset operations outside source fenced and inline code."""
+    parts: list[str] = []
+    pending: list[str] = []
+    fence: str | None = None
+
+    def flush() -> None:
+        value = "".join(pending)
+        pending.clear()
+        # Asset syntax inside inline code is literal source text.
+        cursor = 0
+        for match in re.finditer(r"(`+)([^`\n]*?)\1", value):
+            parts.append(transform(value[cursor : match.start()]))
+            parts.append(match.group(0))
+            cursor = match.end()
+        parts.append(transform(value[cursor:]))
+
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            parts.append(line)
+            if re.fullmatch(
+                r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line
+            ):
+                fence = None
+        elif marker:
+            flush()
+            fence = marker[1]
+            parts.append(line)
+        else:
+            pending.append(line)
+    flush()
+    return "".join(parts)
 
 
 def image_references(text: str) -> Iterator[str]:
     """Yield local image destinations from the two delivered markup formats."""
-    markdown = re.findall(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
-    html = re.findall(r"<img\b[^>]*\bsrc\s*=\s*[\"\x27]([^\"\x27]+)[\"\x27]", text, re.I)
-    for value in [a or b for a, b in markdown] + html:
-        if not re.match(r"^(?:https?:|data:|#)", value, re.I):
+    segments: list[str] = []
+
+    def collect(value: str) -> str:
+        segments.append(value)
+        return value
+
+    transform_markup(text, collect)
+    text = "\n".join(segments)
+    embeds = re.findall(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
+    links = re.findall(r"(?<!!)\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
+    html = re.findall(
+        r"<img\b[^>]*\bsrc\s*=\s*(?:[\"\x27]([^\"\x27]+)[\"\x27]|([^\s>]+))", text, re.I
+    )
+    candidates = [a or b for a, b in embeds + html]
+    candidates.extend(
+        a or b
+        for a, b in links
+        if PurePosixPath(a or b).suffix.lower()
+        in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+    )
+    for value in candidates:
+        if not re.match(r"^(?:[a-z][a-z0-9+.-]*:|#|//)", value, re.I):
             yield value.removeprefix("./")
 
 
@@ -32,34 +86,95 @@ class Block:
     level: int | None = None
     metadata: Payload = field(default_factory=dict)
 
-    def markdown(self) -> str:
+    annotations: list[Annotation] = field(default_factory=list)
+
+    def rewrite_annotations(self, rewrite: Callable[[str], str]) -> None:
+        for item in self.annotations:
+            item.content = rewrite(item.content)
+
+    def markdown(self, *, reader: bool = True, body: str | None = None) -> str:
         parts = []
+        content = self.content if body is None else body
         if self.image_source:
             parts.append(f"![{self.type}]({self.image_source})")
-        if self.content:
+        if content:
             if self.type in {"doc_title", "paragraph_title", "title"}:
-                level = self.level or (
-                    1
-                    if self.type == "doc_title" or self.metadata.get("category") == "doc_title"
-                    else 2
+                heading = re.match(r"^(#{1,6})\s+", content)
+                level = (
+                    self.level
+                    or (len(heading[1]) if heading else None)
+                    or (
+                        1
+                        if self.type == "doc_title" or self.metadata.get("category") == "doc_title"
+                        else 2
+                    )
                 )
-                parts.append("#" * min(level, 6) + " " + re.sub(r"^#{1,6}\s+", "", self.content))
+                parts.append("#" * min(level, 6) + " " + re.sub(r"^#{1,6}\s+", "", content))
             elif self.type in {"equation", "display_formula", "inline_formula"}:
-                formula = self.content.strip()
+                if content.startswith("[Unclear"):
+                    parts.append(content)
+                    content = ""
+                formula = content.strip()
                 for opener, closer in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
                     if formula.startswith(opener) and formula.endswith(closer):
                         formula = formula[len(opener) : -len(closer)].strip()
                         break
+                if formula:
+                    parts.append(
+                        "$" + formula + "$"
+                        if self.type == "inline_formula"
+                        else "$$\n" + formula + "\n$$"
+                    )
+            elif reader and self.type in {
+                "figure_title",
+                "footnote",
+                "vision_footnote",
+                "aside_text",
+                "abstract",
+                "reference_content",
+                "header",
+                "footer",
+            }:
+                roles = {
+                    "figure_title": "Caption",
+                    "footnote": "Footnote",
+                    "vision_footnote": "Figure note",
+                    "aside_text": "Aside",
+                    "abstract": "Abstract",
+                    "reference_content": "References",
+                    "header": "Running header",
+                    "footer": "Running footer",
+                }
                 parts.append(
-                    "$" + formula + "$"
-                    if self.type == "inline_formula"
-                    else "$$\n" + formula + "\n$$"
+                    content
+                    if content.lstrip().startswith("#")
+                    else annotation(roles[self.type], content)
+                )
+            elif self.type == "code" and not content.lstrip().startswith(("```", "~~~")):
+                parts.append("```\n" + content + "\n```")
+            else:
+                parts.append(content)
+        parts.extend(annotation("Caption", c) if reader else c for c in self.captions)
+        parts.extend(annotation("Footnote", c) if reader else c for c in self.footnotes)
+        before, after = [], []
+        for item in self.annotations:
+            if item.generated:
+                if not reader:
+                    continue
+                rendered = visual_description(
+                    item.content,
+                    self.image_source,
+                    photograph=self.metadata.get("asset_type") == "photo",
                 )
             else:
-                parts.append(self.content)
-        parts.extend(self.captions)
-        parts.extend(self.footnotes)
-        return "\n\n".join(parts)
+                rendered = annotation(item.role, item.content) if reader else item.content
+            (before if item.before else after).append(rendered)
+        if reader and self.image_source and not any(a.generated for a in self.annotations):
+            after.append(annotation("Image", asset=self.image_source))
+        if reader and self.type == "table" and content:
+            for i, name in enumerate(dict.fromkeys(image_references(content)), 1):
+                after.append(annotation(f"Table image {i}", asset=name))
+        return "\n\n".join(before + parts + after)
 
 
 @dataclass
@@ -70,11 +185,19 @@ class Page:
 
 
 @dataclass
+class TableBodyProjection:
+    page_idx: int
+    block_idx: int
+    content: str
+
+
+@dataclass
 class DocumentResult:
     pages: list[Page]
     assets: dict[str, Path] = field(default_factory=dict)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     markdown_override: str | None = None
+    table_bodies: list[TableBodyProjection] = field(default_factory=list)
 
     def validate(self) -> None:
         if not self.pages:
@@ -113,10 +236,24 @@ class DocumentResult:
                     raise ValueError("Title level must be a positive integer")
                 if not all(isinstance(s, str) for s in block.captions + block.footnotes):
                     raise ValueError("Caption/footnote content must be strings")
-        texts = [self.markdown()]
+        for projection in self.table_bodies:
+            if (
+                not (0 <= projection.page_idx < len(self.pages))
+                or not (0 <= projection.block_idx < len(self.pages[projection.page_idx].blocks))
+                or self.pages[projection.page_idx].blocks[projection.block_idx].type != "table"
+            ):
+                raise ValueError("Invalid table-body projection target")
+        texts = [self.markdown(), *(p.content for p in self.table_bodies)]
         for page in self.pages:
             for block in page.blocks:
-                texts.extend([block.content, *block.captions, *block.footnotes])
+                texts.extend(
+                    [
+                        block.content,
+                        *block.captions,
+                        *block.footnotes,
+                        *(a.content for a in block.annotations),
+                    ]
+                )
         for text in texts:
             for reference in image_references(text):
                 if reference not in self.assets:
@@ -125,11 +262,23 @@ class DocumentResult:
     def markdown(self) -> str:
         if self.markdown_override is not None:
             return self.markdown_override
-        return "\n\n".join(
-            f"<!-- page {p.page_idx + 1} -->\n\n"
-            + ("\n\n".join(b.markdown() for b in p.blocks) or "<!-- blank page -->")
-            for p in self.pages
-        )
+        from .furniture import furniture_projection
+
+        furniture = furniture_projection(self.pages)
+        bodies = {(p.page_idx, p.block_idx): p.content for p in self.table_bodies}
+        chunks = []
+        for page in self.pages:
+            rendered = []
+            for n, block in enumerate(page.blocks):
+                key = (page.page_idx, n)
+                rendered.append(
+                    furniture[key] if key in furniture else block.markdown(body=bodies.get(key))
+                )
+            chunks.append(
+                f"<!-- page {page.page_idx + 1} -->\n\n"
+                + ("\n\n".join(rendered) or "<!-- blank page -->")
+            )
+        return "\n\n".join(chunks)
 
     def structured(self) -> Payload:
         pages = []
@@ -137,6 +286,7 @@ class DocumentResult:
             blocks = []
             for block in page.blocks:
                 item = asdict(block)
+                del item["annotations"]
                 if block.type == "title":
                     item["type"] = (
                         "doc_title"
@@ -146,9 +296,30 @@ class DocumentResult:
                 if block.type in {"inline_formula", "display_formula", "equation_inline"}:
                     item["type"] = "equation"
                 if item["type"] in {"doc_title", "paragraph_title"}:
+                    heading = re.match(r"^(#{1,6})\s+", block.content)
+                    if block.level is None and heading:
+                        item["level"] = len(heading[1])
                     item["content"] = re.sub(r"^#{1,6}\s+", "", item["content"])
-                item["captions"] = [{"content": c} for c in block.captions]
-                item["footnotes"] = [{"content": c} for c in block.footnotes]
+                item["captions"] = [
+                    {"content": c}
+                    for c in [
+                        *block.captions,
+                        *(
+                            visual_description(a.content, block.image_source)
+                            if a.generated
+                            else a.content
+                            for a in block.annotations
+                            if a.role != "Footnote"
+                        ),
+                    ]
+                ]
+                item["footnotes"] = [
+                    {"content": c}
+                    for c in [
+                        *block.footnotes,
+                        *(a.content for a in block.annotations if a.role == "Footnote"),
+                    ]
+                ]
                 if item["level"] is None:
                     del item["level"]
                 blocks.append(item)

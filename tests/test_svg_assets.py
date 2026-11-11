@@ -6,7 +6,8 @@ import pytest
 from PIL import Image
 
 from mineru_like.config import Settings
-from mineru_like.result import Block, DocumentResult, Page
+from mineru_like.presentation import Annotation
+from mineru_like.result import Block, DocumentResult, Page, TableBodyProjection
 from mineru_like.svg_assets import improve_pdf_assets
 
 
@@ -36,8 +37,15 @@ async def test_isolated_svg_removes_outside_text(tmp_path: Path) -> None:
     pdf.save(source)
     pdf.close()
     result, block = result_for(tmp_path)
+    block.annotations = [Annotation("Caption", "[crop](images/figure.png)")]
+    result.pages[0].blocks.append(Block("table", "<table></table>"))
+    result.table_bodies = [
+        TableBodyProjection(0, 1, '<table><tr><td><img src="images/figure.png"></td></tr></table>')
+    ]
     await improve_pdf_assets(result, source, Settings(), tmp_path)
     assert block.image_source is not None
+    assert block.image_source in block.annotations[0].content
+    assert block.image_source in result.table_bodies[0].content
     assert block.image_source.endswith(".svg"), result.diagnostics
     svg = result.assets[block.image_source].read_text()
     assert "PRIVATE" not in svg

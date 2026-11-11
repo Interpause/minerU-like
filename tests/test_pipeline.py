@@ -225,11 +225,10 @@ async def test_image_pages_and_assets(tmp_path: Path) -> None:
         path, path.name, "auto", "standard", tmp_path / "out"
     )
     assert len(result.pages) == 2
-    assert (
-        result.pages[0].blocks[0].captions[0]
-        == "[AI-generated image description; supplemental] A square."
-    )
-    assert "```mermaid" in result.pages[0].blocks[0].captions[1]
+    assert result.pages[0].blocks[0].annotations[0].content == "A square."
+    assert "[AI img desc] [crop](" in result.markdown()
+    assert "```mermaid" not in result.markdown()
+    assert any("<mermaid>" in str(d.get("raw", "")) for d in result.diagnostics)
     assert result.pages[0].blocks[0].image_source is not None
     assert result.assets[result.pages[0].blocks[0].image_source].is_file()
     assert runtime.count == 1
@@ -342,7 +341,9 @@ async def test_printed_figure_caption_is_associated_with_asset(tmp_path: Path) -
     result = await Pipeline(Settings(captioning=False), runtime).parse(
         path, path.name, "auto", "standard", tmp_path / "out"
     )
-    assert result.pages[0].blocks[0].captions == ["Figure 1: a square"]
+    assert result.structured()["pages"][0]["blocks"][0]["captions"] == [
+        {"content": "Figure 1: a square"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -731,7 +732,7 @@ def test_markdown_fallback_replaces_unavailable_local_image_reference() -> None:
     from mineru_like.pipeline import _fallback_image_references
 
     value = _fallback_image_references('![plot](images/bbox_0_0_1_1.jpg) <img src="images/x.png">')
-    assert value.count("Unclear graphic") == 2
+    assert value.count("Unclear image") == 2
     assert "images/bbox_" not in value and "images/x.png" not in value
 
 
@@ -885,6 +886,7 @@ async def test_independent_page_verification_runs_concurrently(
         *,
         crop_pdf: Callable[..., Path] | None = None,
         region_imagepath: Path | None = None,
+        assets: dict[str, Path] | None = None,
     ) -> Page:
         started.append(page.page_idx)
         if len(started) == 2:
@@ -899,3 +901,157 @@ async def test_independent_page_verification_runs_concurrently(
     ).parse(path, path.name, "ocr", "advanced", tmp_path / "out")
     assert sorted(started) == [0, 1]
     assert all(page.metadata["verified"] for page in result.pages)
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        '<table><tr><td><img src="images/bbox_0_0_500_500.jpg"></td></tr></table>',
+        "![cell](images/bbox_0_0_500_500.jpg)",
+        "[crop](images/bbox_0_0_500_500.jpg)",
+    ],
+)
+def test_bbox_materialization_maps_known_crop_frames(tmp_path: Path, markup: str) -> None:
+    from mineru_like.pipeline import _materialize_markdown_images
+    from mineru_like.result import image_references
+
+    source = tmp_path / "source.png"
+    image = Image.new("RGB", (100, 100), "red")
+    ImageDraw.Draw(image).rectangle((50, 50, 99, 99), fill="blue")
+    image.save(source)
+    assets: dict[str, Path] = {}
+    diagnostics: list[Diagnostic] = []
+    rendered = _materialize_markdown_images(
+        markup,
+        3,
+        None,
+        source,
+        tmp_path,
+        Settings(),
+        assets,
+        diagnostics=diagnostics,
+        frame=(0.5, 0.5, 1, 1),
+    )
+    name = next(image_references(rendered))
+    assert name in assets and "bbox_0_0" not in rendered
+    with Image.open(assets[name]) as crop:
+        assert crop.size == (25, 25) and crop.getpixel((0, 0)) == (0, 0, 255)
+    assert diagnostics[0]["source_bounds"] == [500, 500, 750, 750]
+    if markup.startswith("<table>"):
+        assert "<img src=" in rendered and "<table>" in rendered
+    other = _materialize_markdown_images(markup, 4, None, source, tmp_path, Settings(), assets)
+    assert next(image_references(other)) != name
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    ["0_0_0_500", "-1_0_500_500", "0_0_1001_500", "nan_0_500_500", "0_0_inf_500", "bad_bounds"],
+)
+def test_invalid_bbox_is_localized_with_diagnostic(tmp_path: Path, bounds: str) -> None:
+    from mineru_like.pipeline import _materialize_markdown_images
+
+    diagnostics: list[Diagnostic] = []
+    text = f'Before <img src="images/bbox_{bounds}.jpg"> after'
+    assets: dict[str, Path] = {}
+    rendered = _materialize_markdown_images(
+        text,
+        0,
+        None,
+        tmp_path / "absent.png",
+        tmp_path,
+        Settings(),
+        assets,
+        diagnostics=diagnostics,
+    )
+    assert rendered == "Before [Unclear image; pg 1; zoom if possible.] after"
+    assert not assets and diagnostics[0]["status"] == "unresolved"
+    assert diagnostics[0]["reference"] in text
+
+
+def test_bbox_materialization_propagates_infrastructure_failure(tmp_path: Path) -> None:
+    from mineru_like.pipeline import _materialize_markdown_images
+
+    with pytest.raises(FileNotFoundError):
+        _materialize_markdown_images(
+            "![x](images/bbox_0_0_500_500.jpg)",
+            0,
+            None,
+            tmp_path / "absent.png",
+            tmp_path,
+            Settings(),
+            {},
+        )
+
+
+@pytest.mark.asyncio
+async def test_structured_table_bbox_can_publish_atomically(tmp_path: Path) -> None:
+    path = tmp_path / "input.png"
+    Image.new("RGB", (80, 80), "black").save(path)
+    content = '<table><tr><td>Cell<img src="images/bbox_0_0_500_500.jpg"></td></tr></table>'
+    runtime = Runtime(
+        [
+            assessment(),
+            json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "table", "content": content}]),
+        ]
+    )
+    result = await Pipeline(Settings(captioning=False), runtime).parse(
+        path, path.name, "ocr", "standard", tmp_path / "out"
+    )
+    assert len(result.assets) == 1
+    result.write_zip(tmp_path / "result.zip")
+    assert (tmp_path / "result.zip").is_file()
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_rotated_pdf_bbox_uses_oriented_page_frame(tmp_path: Path) -> None:
+    import pymupdf
+    import pypdfium2 as pdfium
+
+    from mineru_like.pipeline import _materialize_markdown_images
+
+    path = tmp_path / "rotated.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=100, height=200)
+        page.draw_rect(pymupdf.Rect(0, 0, 100, 100), color=(1, 0, 0), fill=(1, 0, 0))
+        page.draw_rect(pymupdf.Rect(0, 100, 100, 200), color=(0, 0, 1), fill=(0, 0, 1))
+        page.set_rotation(90)
+        pdf.save(path)
+    assets: dict[str, Path] = {}
+    text = _materialize_markdown_images(
+        "![x](./images/bbox_0_0_500_1000.jpg)",
+        0,
+        path,
+        tmp_path / "unused.png",
+        tmp_path,
+        Settings(),
+        assets,
+    )
+    assert "Unclear" not in text and len(assets) == 1
+    with pdfium.PdfDocument(path) as pdf:
+        reference = pdf[0].render(scale=1).to_pil().convert("RGB")
+        expected = reference.getpixel((reference.width // 4, reference.height // 2))
+    with Image.open(next(iter(assets.values()))) as crop:
+        assert crop.getpixel((crop.width // 2, crop.height // 2)) == expected
+
+
+def test_unquoted_bbox_image_is_normalized_before_asset_renaming(tmp_path: Path) -> None:
+    from mineru_like.pipeline import _materialize_markdown_images
+    from mineru_like.processor import finalize_asset_names
+    from mineru_like.result import Block, DocumentResult, Page
+
+    path = tmp_path / "source.png"
+    Image.new("RGB", (20, 20), "red").save(path)
+    assets: dict[str, Path] = {}
+    content = _materialize_markdown_images(
+        "<table><tr><td><img src=images/bbox_0_0_500_500.jpg></td></tr></table>",
+        0,
+        None,
+        path,
+        tmp_path,
+        Settings(),
+        assets,
+    )
+    result = DocumentResult([Page(0, [Block("table", content)])], assets)
+    finalize_asset_names(result)
+    result.validate()
+    assert '<img src="images/' in result.markdown() and "[Table image 1]" in result.markdown()

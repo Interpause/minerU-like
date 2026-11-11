@@ -50,8 +50,9 @@ async def test_three_page_reconstruction_renders_intermediate(tmp_path: Path) ->
     assert calls[0][0] == [tmp_path / "page-1.png", tmp_path / "page-2.png"]
     assert calls[1][0][1] == tmp_path / "table-recursive-1.png"
     assert table("1", "2") in rendered[0] and table("1", "2") in calls[1][1]
-    assert result.markdown_override is not None
-    assert result.markdown_override.count("<table>") == 1
+    assert result.table_bodies
+    assert result.markdown_override is None
+    assert result.markdown().count("<table>") == 1
     assert all(len(page.blocks) == 1 for page in result.pages)
 
 
@@ -187,8 +188,9 @@ async def test_recovery_and_truncated_fragment(tmp_path: Path) -> None:
     )
     assert result.diagnostics[-1]["finish_reason"] == "length"
     assert "truncated" in result.diagnostics[-1]["warning"]
-    assert result.markdown_override is not None
-    assert "paragraph" in result.markdown_override
+    assert result.table_bodies
+    assert result.markdown_override is None
+    assert "paragraph" in result.markdown()
 
 
 @pytest.mark.asyncio
@@ -219,8 +221,9 @@ async def test_three_page_merge_preserves_non_table_content(tmp_path: Path) -> N
         Image.new("RGB", (10, 10), "white").save(output)
 
     assert await reconstruct_tables(result, tmp_path, Runtime(), render, max_tokens=100) == 2
-    assert result.markdown_override is not None
-    assert all(f"paragraph {i}" in result.markdown_override for i in range(3))
+    assert result.table_bodies
+    assert result.markdown_override is None
+    assert all(f"paragraph {i}" in result.markdown() for i in range(3))
     assert result.diagnostics[-1]["source_pages"] == [0, 1, 2]
 
 
@@ -349,3 +352,20 @@ def test_reconstruction_preserves_cell_order_and_empty_cells(replacement: str) -
     raw = json.dumps([{"source_pages": [1, 2], "html": replacement}])
     with pytest.raises(ValueError, match="source cells"):
         _validated(raw, [table("a", ""), table("b")])
+
+
+def test_reconstruction_rejects_new_bbox_but_accepts_exact_registered_images() -> None:
+    from mineru_like.tables import _validated
+
+    first = '<table><tr><td>A<img src="images/a.png"></td></tr></table>'
+    second = "<table><tr><td>B</td></tr></table>"
+    merged = '<table><tr><td>A<img src="images/a.png"></td></tr><tr><td>B</td></tr></table>'
+
+    def raw(body: str) -> str:
+        return json.dumps([{"source_pages": [1, 2], "html": body}])
+
+    assert _validated(raw(merged), [first, second]) == merged
+    with pytest.raises(ValueError, match="provenance"):
+        _validated(
+            raw(merged.replace("images/a.png", "images/bbox_0_0_500_500.jpg")), [first, second]
+        )
