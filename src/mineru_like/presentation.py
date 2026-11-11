@@ -29,7 +29,7 @@ def annotation(
         return "[" + label + "]"
     parts = ["[" + label + "]"]
     if asset:
-        parts.append(f"[crop]({asset})")
+        parts.append(f"[view_src_img]({asset})")
     if content:
         parts.append(content)
     if cue:
@@ -41,12 +41,8 @@ def unclear(kind: str, location: str | None = None) -> str:
     return annotation("Unclear " + kind, location=location, cue="zoom if possible")
 
 
-def visual_description(content: str, asset: str | None, *, photograph: bool = False) -> str:
-    cue = (
-        "Inspect appearance or identity if needed."
-        if photograph
-        else "Inspect exact labels and relationships if needed."
-    )
+def visual_description(content: str, asset: str | None) -> str:
+    cue = "View source image if helpful; Caption may be partial/unreliable."
     return annotation("AI img desc", content, asset=asset, cue=cue)
 
 

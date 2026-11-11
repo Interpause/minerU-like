@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from mineru_like.furniture import furniture_projection, restore_heading_roles
 from mineru_like.native import _nested
 from mineru_like.pipeline import CATEGORIES
 from mineru_like.presentation import Annotation, annotation, unclear, visual_description
@@ -20,12 +21,12 @@ def test_complete_annotations_and_plain_formula_notice() -> None:
     assert notice == "[Unclear formula; pg 7, approx. lower-right; zoom if possible.]"
     assert Block("equation", notice).markdown() == notice
     assert visual_description("Full caption.", "images/final.webp") == (
-        "[AI img desc] [crop](images/final.webp) Full caption. "
-        "Inspect exact labels and relationships if needed."
+        "[AI img desc] [view_src_img](images/final.webp) Full caption. "
+        "View source image if helpful; Caption may be partial/unreliable."
     )
-    assert visual_description("A photograph.", "images/photo.webp", photograph=True) == (
-        "[AI img desc] [crop](images/photo.webp) A photograph. "
-        "Inspect appearance or identity if needed."
+    assert visual_description("A photograph.", "images/photo.webp") == (
+        "[AI img desc] [view_src_img](images/photo.webp) A photograph. "
+        "View source image if helpful; Caption may be partial/unreliable."
     )
 
 
@@ -58,7 +59,7 @@ def test_every_ovis_role_preserves_its_source_semantics(category: str) -> None:
         block = Block(category, "", image_source="images/source.webp")
         markdown = block.markdown()
         assert set(image_references(markdown)) == {"images/source.webp"}
-        assert "![" in markdown and "[crop]" in markdown
+        assert "![" in markdown and "[view_src_img]" in markdown
         assert "AI img desc" not in markdown
         return
     content, role = examples[category]
@@ -135,7 +136,7 @@ def test_ordered_provenance_keeps_evidence_and_full_generated_caption() -> None:
     )
     md = block.markdown()
     assert md.index("Above") < md.index("![image]") < md.index("Below") < md.index("AI img desc")
-    assert caption in md and "[crop](images/final.webp)" in md
+    assert caption in md and "[view_src_img](images/final.webp)" in md
     assert set(image_references(md)) == {"images/final.webp"}
     source = block.markdown(reader=False)
     assert "Above" in source and "Below" in source
@@ -144,6 +145,42 @@ def test_ordered_provenance_keeps_evidence_and_full_generated_caption() -> None:
     assert "annotations" not in structured
     assert structured["captions"][0] == {"content": "Above"}
     assert "AI img desc" in structured["captions"][1]["content"]
+
+
+def test_inline_images_keep_reader_links_when_plugin_strips_embeds() -> None:
+    content = (
+        'Before <img src="images/html.webp"> between ![plot](images/plot.png) '
+        "![duplicate](images/html.webp) [existing](images/linked.webp) "
+        "![linked](images/linked.webp) "
+        "`![literal](images/code.png)`\n\n"
+        '```html\n<img src="images/fenced.png">\n```'
+    )
+    block = Block("text", content)
+    rendered = block.markdown()
+    assert rendered.startswith(content)
+    assert rendered.count("[view_src_img](images/html.webp)") == 1
+    assert rendered.count("[view_src_img](images/plot.png)") == 1
+    assert "[view_src_img](images/linked.webp)" not in rendered
+    assert "[view_src_img](images/code.png)" not in rendered
+    assert "[view_src_img](images/fenced.png)" not in rendered
+    assert rendered.index("[view_src_img](images/html.webp)") < rendered.index(
+        "[view_src_img](images/plot.png)"
+    )
+    assert block.markdown(reader=False) == content
+    assert Block("code", "![literal](images/code.png)").markdown().count("view_src_img") == 0
+    assert list(image_references(content)) == [
+        "images/html.webp",
+        "images/plot.png",
+        "images/html.webp",
+        "images/linked.webp",
+        "images/linked.webp",
+    ]
+
+
+def test_linked_image_embed_still_gets_a_source_link() -> None:
+    content = "[![plot](images/plot.png)](https://example.org)"
+    assert list(image_references(content, kind="embedded")) == ["images/plot.png"]
+    assert "[view_src_img](images/plot.png)" in Block("text", content).markdown()
 
 
 def _pages(
@@ -165,7 +202,8 @@ def _pages(
 def test_exact_and_inferred_furniture_threshold_and_structured_retention() -> None:
     result = DocumentResult(_pages(["Lecture 5"] * 3))
     assert result.markdown().count("Lecture 5") == 1
-    assert "Running header" in result.markdown() and "1–3" in result.markdown()
+    assert "[Running header: Lecture 5]" in result.markdown()
+    assert "pg " not in result.markdown()
     assert [p["blocks"][0]["content"] for p in result.structured()["pages"]] == ["Lecture 5"] * 3
     assert DocumentResult(_pages(["Stable"] * 4, "text")).markdown().count("Stable") == 4
     assert DocumentResult(_pages(["Stable"] * 5, "text")).markdown().count("Stable") == 1
@@ -173,19 +211,118 @@ def test_exact_and_inferred_furniture_threshold_and_structured_retention() -> No
 
 def test_coverage_gaps_odd_even_offsets_and_roman_numbering() -> None:
     result = DocumentResult(_pages(["Odd", "Even", "Odd", "Even", "Odd", "Even", "Other"]))
-    assert "pg 1, 3, 5: Odd" in result.markdown()
-    assert "pg 2, 4, 6: Even" in result.markdown()
-    assert "pg 7: Other" in result.markdown()
+    assert result.markdown().count("[Running header: Odd]") == 3
+    assert result.markdown().count("[Running header: Even]") == 3
+    assert "[Running header: Other]" in result.markdown()
     counters = DocumentResult(_pages(["Page 9 / 20", "Page 10 / 20", "Page 11 / 20"]))
-    assert counters.markdown().count("Running header") == 1
-    assert "1–3→9–11" in counters.markdown()
+    assert "Running header" not in counters.markdown()
+    assert all(f"[Printed page {i}]" in counters.markdown() for i in (9, 10, 11))
     roman = DocumentResult(_pages(["i", "ii", "iii"], "number"))
-    assert "1–3→i–iii" in roman.markdown()
+    assert all(f"[Printed page {i}]" in roman.markdown() for i in ("i", "ii", "iii"))
     assert DocumentResult(_pages(["1", "2", "3"], "number")).markdown().count("Running") == 0
     assert [
         p["blocks"][0]["content"]
         for p in DocumentResult(_pages(["1", "2", "3"], "number")).structured()["pages"]
     ] == ["1", "2", "3"]
+
+
+def test_fragmented_counter_spacing_and_furniture_runs_keep_details_out_of_reader() -> None:
+    pages = _pages(["1/64", " 5 / 64 ", "10 /64"], "footer", box=(0.8, 0.96, 0.98, 0.99))
+    for page, index in zip(pages, (0, 4, 9), strict=True):
+        page.page_idx = index
+    diagnostics = []
+    projection = furniture_projection(pages, diagnostics)
+    assert all(projection[p.page_idx, 0] == "" for p in pages)
+    markdown = DocumentResult(pages).markdown()
+    assert "Running" not in markdown and "printed pages" not in markdown
+    assert diagnostics[0]["pages"] == [1, 5, 10]
+    assert [p["blocks"][0]["content"] for p in DocumentResult(pages).structured()["pages"]] == [
+        "1/64",
+        " 5 / 64 ",
+        "10 /64",
+    ]
+    runs = DocumentResult(_pages(["A"] * 3 + ["B"] * 3 + ["A"] * 3)).markdown()
+    assert runs.count("[Running header: A]") == 2
+    assert runs.count("[Running header: B]") == 1
+    # A single isolated label is insufficient evidence to remove a page counter.
+    assert "5 / 64" in DocumentResult(_pages(["5 / 64"], "footer")).markdown()
+
+
+def test_stable_title_geometry_restores_each_slide_heading_and_source_provenance() -> None:
+    pages = _pages(["One", "Two", "Three", "Repeated", "Repeated", "Repeated"])
+    for page in pages:
+        page.blocks[0].bbox = (0.025, 0.03, 0.8, 0.08)
+    for page in pages[:3]:
+        page.blocks[0].type = "title"
+        page.blocks[0].metadata["category"] = "paragraph_title"
+    pages[1].blocks[0].bbox = (0.025, 0.03, 0.4, 0.08)
+    diagnostics = []
+    restore_heading_roles(pages, diagnostics)
+    result = DocumentResult(pages)
+    assert result.markdown().count("## Repeated") == 3
+    assert "Running" not in result.markdown()
+    restored = result.structured()["pages"][3]["blocks"][0]
+    assert restored["type"] == "paragraph_title" and restored["content"] == "Repeated"
+    assert restored["metadata"]["original_category"] == "header"
+    assert restored["metadata"]["original_type"] == "header"
+    assert len(diagnostics) == 3
+    restore_heading_roles(pages, diagnostics)
+    assert len(diagnostics) == 3
+
+
+@pytest.mark.parametrize(
+    "exclusion",
+    [
+        "few",
+        "bullet",
+        "alphabetic_list",
+        "logical",
+        "native",
+        "missing",
+        "competing",
+        "multiline",
+        "small",
+    ],
+)
+def test_ambiguous_header_geometry_is_not_promoted(exclusion: str) -> None:
+    pages = _pages(["One", "Two", "Three", "Header"])
+    for page in pages:
+        page.blocks[0].bbox = (0.025, 0.03, 0.8, 0.08)
+    for page in pages[:3]:
+        page.blocks[0].type = "title"
+        page.blocks[0].metadata["category"] = "paragraph_title"
+    target = pages[-1].blocks[0]
+    if exclusion == "few":
+        pages[0].blocks[0].type = "text"
+        pages[0].blocks[0].metadata.pop("category")
+    elif exclusion == "bullet":
+        pages[0].blocks[0].content = "• Results"
+    elif exclusion == "alphabetic_list":
+        pages[0].blocks[0].content = "a) Results"
+    elif exclusion == "logical":
+        pages[-1].metadata["page_boundary"] = "logical"
+    elif exclusion == "native":
+        target.metadata["source"] = "native"
+    elif exclusion == "missing":
+        target.bbox = None
+    elif exclusion == "competing":
+        pages[-1].blocks.append(
+            Block("title", "Other title", bbox=target.bbox, metadata={"source": "visual"})
+        )
+    elif exclusion == "multiline":
+        pages[-1].blocks.append(
+            Block(
+                "title",
+                "A longer\ncompeting title",
+                bbox=(0.1, 0.1, 0.9, 0.25),
+                metadata={"source": "visual"},
+            )
+        )
+    else:
+        target.bbox = (0.025, 0.01, 0.8, 0.03)
+    diagnostics = []
+    restore_heading_roles(pages, diagnostics)
+    assert target.type == "header" and not diagnostics
 
 
 @pytest.mark.parametrize(

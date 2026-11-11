@@ -101,7 +101,7 @@ def test_ordinary_image_links_validate_without_intercepting_document_links(tmp_p
     from mineru_like.result import image_references
 
     text = "[paper](paper.pdf) [site](https://example.org/image.png) [email](mailto:a@example.org) [crop](images/local.webp) ![missing](unknown)"
-    assert list(image_references(text)) == ["unknown", "images/local.webp"]
+    assert list(image_references(text)) == ["images/local.webp", "unknown"]
     result = DocumentResult([Page(0, [Block("text", "[crop](images/missing.webp)")])])
     target = tmp_path / "result.zip"
     target.write_bytes(b"previous publication")

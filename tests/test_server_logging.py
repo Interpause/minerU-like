@@ -118,6 +118,43 @@ def test_backend_tail_does_not_change_child_write_offset(caplog: pytest.LogCaptu
     assert "CUDA allocation failed" in getattr(record, "details")["backend_log_tail"]
 
 
+def test_quality_diagnostics_keep_measurements_without_raw_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="mineru_like.server_logging"):
+        record_diagnostic(
+            {
+                "stage": "structured_coverage",
+                "page_idx": 1,
+                "coverage_basis": "background_aware_ink",
+                "ink_pixels": 1000,
+                "uncovered_ink_pixels": 50,
+                "uncovered_fraction": 0.05,
+                "raw": "PRIVATE_SOURCE_TEXT",
+            }
+        )
+        record_diagnostic(
+            {
+                "stage": "captions",
+                "reason": "insufficient region overlap",
+                "error": "No unambiguous generated caption matched figure",
+                "candidate_count": 3,
+                "matched_candidates": 0,
+                "best_iou": 0.25,
+                "raw": "PRIVATE_SOURCE_TEXT",
+                "bbox": [0, 0, 1, 1],
+            }
+        )
+    details = [
+        getattr(record, "details")
+        for record in caplog.records
+        if record.message == "parse_diagnostic"
+    ]
+    assert details[0]["uncovered_fraction"] == 0.05 and details[0]["page"] == 2
+    assert details[1]["candidate_count"] == 3 and details[1]["best_iou"] == 0.25
+    assert all("raw" not in item and "bbox" not in item for item in details)
+
+
 def test_rejected_upload_names_document_without_logging_request_body(tmp_path: Path) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path, max_upload_bytes=1))) as client:
         response = client.post("/v1/uploads", json={"filename": "large.pdf", "bytes": 4})

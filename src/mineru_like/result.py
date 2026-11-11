@@ -8,6 +8,7 @@ import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from .contracts import Diagnostic, Payload
 from .presentation import Annotation, annotation, visual_description
@@ -48,7 +49,9 @@ def transform_markup(text: str, transform: Callable[[str], str]) -> str:
     return "".join(parts)
 
 
-def image_references(text: str) -> Iterator[str]:
+def image_references(
+    text: str, *, kind: Literal["all", "embedded", "linked"] = "all"
+) -> Iterator[str]:
     """Yield local image destinations from the two delivered markup formats."""
     segments: list[str] = []
 
@@ -58,19 +61,25 @@ def image_references(text: str) -> Iterator[str]:
 
     transform_markup(text, collect)
     text = "\n".join(segments)
-    embeds = re.findall(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
-    links = re.findall(r"(?<!!)\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))", text)
-    html = re.findall(
-        r"<img\b[^>]*\bsrc\s*=\s*(?:[\"\x27]([^\"\x27]+)[\"\x27]|([^\s>]+))", text, re.I
+    pattern = (
+        r"(?P<embed>!)?\[[^\[\]]*\]\(\s*(?:<(?P<angle>[^>]+)>|(?P<plain>[^\s\)]+))"
+        r"|<img\b[^>]*\bsrc\s*=\s*(?:[\"\x27](?P<quoted>[^\"\x27]+)[\"\x27]"
+        r"|(?P<unquoted>[^\s>]+))"
     )
-    candidates = [a or b for a, b in embeds + html]
-    candidates.extend(
-        a or b
-        for a, b in links
-        if PurePosixPath(a or b).suffix.lower()
-        in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
-    )
-    for value in candidates:
+    for match in re.finditer(pattern, text, re.I):
+        value = match["angle"] or match["plain"] or match["quoted"] or match["unquoted"]
+        embedded = bool(match["embed"] or match["quoted"] or match["unquoted"])
+        if kind == "embedded" and not embedded or kind == "linked" and embedded:
+            continue
+        if not embedded and PurePosixPath(value).suffix.lower() not in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".svg",
+        }:
+            continue
         if not re.match(r"^(?:[a-z][a-z0-9+.-]*:|#|//)", value, re.I):
             yield value.removeprefix("./")
 
@@ -164,16 +173,18 @@ class Block:
                 rendered = visual_description(
                     item.content,
                     self.image_source,
-                    photograph=self.metadata.get("asset_type") == "photo",
                 )
             else:
                 rendered = annotation(item.role, item.content) if reader else item.content
             (before if item.before else after).append(rendered)
         if reader and self.image_source and not any(a.generated for a in self.annotations):
             after.append(annotation("Image", asset=self.image_source))
-        if reader and self.type == "table" and content:
-            for i, name in enumerate(dict.fromkeys(image_references(content)), 1):
-                after.append(annotation(f"Table image {i}", asset=name))
+        if reader and content and self.type != "code":
+            linked = set(image_references("\n".join(before + parts + after), kind="linked"))
+            for i, name in enumerate(dict.fromkeys(image_references(content, kind="embedded")), 1):
+                if name not in linked:
+                    role = f"Table image {i}" if self.type == "table" else "Image"
+                    after.append(annotation(role, asset=name))
         return "\n\n".join(before + parts + after)
 
 

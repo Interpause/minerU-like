@@ -120,6 +120,13 @@ def record_diagnostic(item: Payload) -> None:
         "message",
         "model_calls",
         "regions",
+        "coverage_basis",
+        "ink_pixels",
+        "uncovered_ink_pixels",
+        "uncovered_fraction",
+        "candidate_count",
+        "matched_candidates",
+        "best_iou",
     }
     details = {key: value for key, value in item.items() if key in keys}
     if "message" in details:

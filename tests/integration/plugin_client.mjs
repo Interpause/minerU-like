@@ -41,7 +41,8 @@ if (!realPdf) {
   const image = process.env.TEST_EXPECTED_ASSET || 'images/figure.png';
   assert.equal(content[1].img_path, image);
   assert.ok(result.files.some(f => f.relativePath === image));
-  assert.ok(result.mdContent.includes(`[crop](${image})`));
+  assert.ok(result.mdContent.includes(`[view_src_img](${image})`));
+  assert.equal([...result.mdContent.matchAll(/\[view_src_img\]\(/g)].length, 2);
   if (process.env.TEST_CROP_LIFECYCLE === '1') await checkCropLifecycle(result);
 } else {
   assert.ok(content.length > 0);
@@ -73,9 +74,11 @@ async function checkCropLifecycle(input) {
   })));
   const finalized = cache.finalizeMineruCacheFiles(merged.mdContent, merged.files, {keepSourceImages:true,pageCount:2});
   assert.ok(!finalized.mdContent.includes('![image]'));
-  const links = [...finalized.mdContent.matchAll(/\[crop\]\(([^)]+)\)/g)].map(m => m[1]);
-  assert.equal(links.length, 2);
-  assert.notEqual(links[0], links[1]);
+  const links = [...finalized.mdContent.matchAll(/\[view_src_img\]\(([^)]+)\)/g)].map(m => m[1]);
+  assert.equal(links.length, 4);
+  assert.equal(links[0], links[1]);
+  assert.equal(links[2], links[3]);
+  assert.notEqual(links[0], links[2]);
   for (const link of links) assert.ok(finalized.files.some(f => f.relativePath === link));
 
   // Gecko IO is supplied by an in-memory filesystem; plugin pruning code is unchanged.
@@ -111,9 +114,9 @@ async function checkCropLifecycle(input) {
   const after = new TextDecoder().decode(files.get(`${itemDir}/full.md`));
   assert.equal(after,finalized.mdContent);
   for (const link of links) {
-    assert.ok(after.includes(`[crop](${link})`));
+    assert.ok(after.includes(`[view_src_img](${link})`));
     assert.ok(!files.has(`${itemDir}/${link}`));
   }
-  assert.ok(!after.includes(`[crop](${cropPath})`));
+  assert.ok(!after.includes(`[view_src_img](${cropPath})`));
   delete globalThis.IOUtils;
 }

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
@@ -125,8 +125,117 @@ def assessment(**updates: bool | str) -> str:
     return "LAYOUT:" + json.dumps([{"bbox": [0, 0, 1000, 1000], "category": c} for c in categories])
 
 
+@pytest.mark.asyncio
+async def test_pipeline_restores_heading_role_before_both_delivery_formats(tmp_path: Path) -> None:
+    path = tmp_path / "slides.tiff"
+    write_table_pages(path, 4)
+    outputs = [
+        json.dumps(
+            [
+                {
+                    "bbox": [25, 30, 800, 80],
+                    "category": "paragraph_title" if i < 3 else "header",
+                    "content": f"Slide {i + 1}",
+                },
+                {"bbox": [0, 100, 1000, 1000], "category": "text", "content": f"Body {i + 1}"},
+            ]
+        )
+        for i in range(4)
+    ]
+    result = await Pipeline(
+        Settings(captioning=False, cross_page_tables=False), TableRuntime(outputs, [], [])
+    ).parse(path, path.name, "ocr", "standard", tmp_path / "out")
+    assert "## Slide 4" in result.markdown()
+    block = result.structured()["pages"][3]["blocks"][0]
+    assert block["type"] == "paragraph_title" and block["metadata"]["original_category"] == "header"
+    assert any(d.get("stage") == "heading_role" and d["page_idx"] == 3 for d in result.diagnostics)
+
+
 def structured(content: str = "Visual text") -> str:
     return json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "text", "content": content}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("omit_body", [False, True], ids=["complete", "missing-body"])
+@pytest.mark.parametrize("title", ["A slide title", "Explaining Cross-Country Growth Differences"])
+async def test_dark_banner_is_background_but_missing_body_still_recovers(
+    tmp_path: Path, omit_body: bool, title: str
+) -> None:
+    source = Image.new("RGB", (1000, 750), "white")
+    draw = ImageDraw.Draw(source)
+    draw.rectangle((0, 0, 999, 150), fill="#162446")
+    draw.text((30, 40), title, font=ImageFont.load_default(size=32), fill="white")
+    for i in range(18):
+        draw.text(
+            (35, 200 + i * 25),
+            "Visible body content on this slide.",
+            font=ImageFont.load_default(size=20),
+            fill="black",
+        )
+    path = tmp_path / "slide.png"
+    source.save(path)
+    source.close()
+    items = [{"bbox": [25, 45, 950, 110], "category": "paragraph_title", "content": title}]
+    if not omit_body:
+        items.append(
+            {"bbox": [30, 260, 800, 900], "category": "text", "content": "Visible body content."}
+        )
+    runtime = Runtime([json.dumps(items), assessment(), "Fallback retained."])
+    result = await Pipeline(Settings(captioning=False, cross_page_tables=False), runtime).parse(
+        path, path.name, "ocr", "standard", tmp_path / "out"
+    )
+    coverage = next(d for d in result.diagnostics if d.get("stage") == "structured_coverage")
+    if omit_body:
+        assert coverage["uncovered_fraction"] > 0.6
+        assert result.pages[0].metadata["route"] == "markdown_fallback"
+        assert "Fallback retained." in result.markdown()
+    else:
+        assert coverage["uncovered_fraction"] < 0.6
+        assert result.pages[0].metadata["route"] == "visual"
+        assert "Visible body content." in result.markdown()
+        assert len(runtime.calls) == 1
+
+
+def test_semantic_graphic_replacement_still_counts_uncovered_solid_paint(tmp_path: Path) -> None:
+    from mineru_like.pipeline import _semantic_regions
+
+    image = Image.new("RGB", (100, 100), "white")
+    ImageDraw.Draw(image).rectangle((0, 50, 99, 99), fill="black")
+    path = tmp_path / "graphic.png"
+    image.save(path)
+    image.close()
+    assert not _semantic_regions(
+        [
+            {
+                "bbox": [0, 0, 1000, 400],
+                "category": "table",
+                "content": "<table><tr><td>A</td></tr></table>",
+            }
+        ],
+        path,
+    )
+
+
+def test_page_coverage_does_not_ignore_solid_body_graphics() -> None:
+    from mineru_like.pipeline import _ink_outside
+
+    image = Image.new("RGB", (1000, 750), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 999, 100), fill="#162446")
+    draw.text(
+        (30, 30),
+        "A long slide title describing a figure",
+        font=ImageFont.load_default(size=32),
+        fill="white",
+    )
+    draw.rectangle((100, 180, 900, 650), fill="black")
+    total, outside = _ink_outside(
+        image,
+        [{"bbox": [20, 20, 950, 120], "category": "paragraph_title", "content": "Title"}],
+        local_contrast=True,
+    )
+    assert outside / total > 0.6
+    image.close()
 
 
 @pytest.mark.asyncio
@@ -770,6 +879,38 @@ async def test_invalid_optional_caption_keeps_figure(tmp_path: Path) -> None:
     assert any(
         d.get("stage") == "captions" and d.get("status") == "unresolved" for d in result.diagnostics
     )
+    result.validate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boxes,content,reason",
+    [
+        ([], "note", "no compatible image regions"),
+        ([[0, 0, 400, 400]], "<caption>A panel.</caption>", "insufficient region overlap"),
+        ([[0, 0, 1000, 1000]] * 2, "<caption>A panel.</caption>", "multiple matching regions"),
+        ([[0, 0, 1000, 1000]], "<caption> </caption>", "matched region has no nonempty caption"),
+    ],
+)
+async def test_unmatched_caption_records_cause_and_preserves_source(
+    tmp_path: Path, boxes: list[list[int]], content: str, reason: str
+) -> None:
+    path = tmp_path / "figure.png"
+    Image.new("RGB", (50, 50), "gray").save(path)
+    figures = [{"bbox": [0, 0, 1000, 1000], "category": "image", "content": "<img/>"}]
+    captions = [{"bbox": box, "category": "image", "content": content} for box in boxes]
+    if not boxes:
+        captions = [{"bbox": [0, 0, 1000, 1000], "category": "text", "content": content}]
+    runtime = Runtime([json.dumps(figures), json.dumps(captions)])
+    result = await Pipeline(Settings(cross_page_tables=False), runtime).parse(
+        path, path.name, "ocr", "standard", tmp_path / "out"
+    )
+    assert result.pages[0].blocks[0].image_source
+    assert "[view_src_img]" in result.markdown() and "[AI img desc]" not in result.markdown()
+    warning = next(d for d in result.diagnostics if d.get("stage") == "captions" and d.get("error"))
+    assert warning["reason"] == reason
+    assert warning["candidate_count"] == len(boxes)
+    assert "best_iou" in warning and "matched_candidates" in warning
     result.validate()
 
 

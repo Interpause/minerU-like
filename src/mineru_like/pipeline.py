@@ -20,7 +20,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast, overload
 
-from PIL import Image, ImageChops, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 from .config import Settings
 from .contracts import Diagnostic, Inference, ModelOutputError, Payload
@@ -697,9 +697,29 @@ def _structured(raw: str) -> list[Payload]:
     return value
 
 
-def _ink_outside(preview: Image.Image, items: list[Payload]) -> tuple[int, int]:
+def _ink_outside(
+    preview: Image.Image, items: list[Payload], *, local_contrast: bool = False
+) -> tuple[int, int]:
     gray = preview.convert("L")
     ink = gray.point(lambda pixel: 255 if pixel < 180 else 0)
+    if local_contrast:
+        contrast = ImageChops.difference(
+            gray.filter(ImageFilter.MaxFilter(3)), gray.filter(ImageFilter.MinFilter(3))
+        )
+        edges = contrast.point(lambda pixel: 255 if pixel >= 40 else 0)
+        background = Image.new("L", gray.size, 0)
+        # Discount only observed uniform edge bands; preserve solid body graphics.
+        for rows in (range(gray.height // 5), range(gray.height - 1, gray.height * 4 // 5, -1)):
+            for y in rows:
+                row = gray.crop((0, y, gray.width, y + 1))
+                histogram = row.histogram()
+                tone = max(range(180), key=histogram.__getitem__)
+                if sum(histogram[max(0, tone - 4) : min(180, tone + 5)]) < gray.width * 2 / 3:
+                    break
+                background.paste(
+                    row.point(lambda pixel: 255 if abs(pixel - tone) <= 4 else 0), (0, y)
+                )
+        ink = ImageChops.lighter(ImageChops.subtract(ink, background), edges)
     mask = Image.new("L", gray.size, 255)
     draw = ImageDraw.Draw(mask)
     w, h = gray.size
@@ -1183,6 +1203,10 @@ class Pipeline:
             )
         for temporary in workdir.glob("formula-*.png"):
             temporary.unlink(missing_ok=True)
+        from .furniture import furniture_projection, restore_heading_roles
+
+        restore_heading_roles(result.pages, result.diagnostics)
+        furniture_projection(result.pages, result.diagnostics)
         return result
 
     async def _page(
@@ -1210,7 +1234,17 @@ class Pipeline:
             if not items:
                 raise ValueError("no blocks for a nonblank page")
             with Image.open(preview_path) as preview:
-                total, outside = _ink_outside(preview, items)
+                total, outside = _ink_outside(preview, items, local_contrast=True)
+            diagnostics.append(
+                {
+                    "page_idx": idx,
+                    "stage": "structured_coverage",
+                    "coverage_basis": "background_aware_ink",
+                    "ink_pixels": total,
+                    "uncovered_ink_pixels": outside,
+                    "uncovered_fraction": outside / total if total else 0,
+                }
+            )
             if (
                 not any(item.get("_incomplete") for item in items)
                 and total > 80
@@ -1497,6 +1531,7 @@ class Pipeline:
             ):
                 generated = False
                 candidates = []
+                overlaps = []
                 for item in captions:
                     if item["category"] not in IMAGES:
                         continue
@@ -1510,7 +1545,9 @@ class Pipeline:
                         + (box[2] - box[0]) * (box[3] - box[1])
                         - intersection
                     )
-                    if union and intersection / union > 0.5:
+                    iou = intersection / union if union else 0
+                    overlaps.append(iou)
+                    if iou > 0.5:
                         candidates.append(item)
                 if len(candidates) == 1:
                     if block.metadata.get("asset_type", "unknown") == "unknown":
@@ -1543,6 +1580,19 @@ class Pipeline:
                             "page_idx": idx,
                             "stage": "captions",
                             "error": "No unambiguous generated caption matched figure",
+                            "reason": (
+                                "no compatible image regions"
+                                if not overlaps
+                                else "insufficient region overlap"
+                                if not candidates
+                                else "multiple matching regions"
+                                if len(candidates) > 1
+                                else "matched region has no nonempty caption"
+                            ),
+                            "candidate_count": len(overlaps),
+                            "matched_candidates": len(candidates),
+                            "best_iou": max(overlaps, default=0),
+                            "bbox": block.bbox,
                         }
                     )
         return Page(

@@ -74,6 +74,10 @@ async def test_plugin_client_lifecycle(
                                 Annotation("AI img desc", "A synthetic square.", generated=True)
                             ],
                         ),
+                        Block(
+                            "text",
+                            f'Fallback before <img src="images/figure.{asset_format}"> fallback after.',
+                        ),
                     ],
                 )
             ],
