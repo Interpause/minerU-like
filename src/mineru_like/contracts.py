@@ -12,6 +12,10 @@ Diagnostic: TypeAlias = Payload
 SQLiteRecord: TypeAlias = dict[str, Any]
 
 
+class ModelOutputError(ValueError):
+    """A completed inference response failed content validation."""
+
+
 class Inference(Protocol):
     async def infer(
         self,

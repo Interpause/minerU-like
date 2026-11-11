@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from .config import Settings
-from .contracts import Inference, Payload
+from .contracts import Inference, ModelOutputError, Payload
 from .presentation import Annotation, annotation, list_item
 from .result import Block, DocumentResult, Page
 from .verification import VerificationPipeline, _units
@@ -134,8 +134,9 @@ def _inference_image(source: Path, workdir: Path) -> Path:
     from docvortex.foundation._svg_raster import _intrinsic_size
     from PIL import Image
 
+    data = source.read_bytes()
     try:
-        root = _parse_svg_root_strict(source.read_bytes())
+        root = _parse_svg_root_strict(data)
         for node in root.iter():
             name = node.tag.rsplit("}", 1)[-1].lower()
             if name in {"image", "script", "foreignobject"}:
@@ -150,26 +151,24 @@ def _inference_image(source: Path, workdir: Path) -> Path:
         size = _intrinsic_size(root)
         if not size:
             raise ValueError("SVG has no bounded dimensions")
-        width, height = size
-        scale = min(1.0, 2048 / width, 2048 / height, (4_000_000 / (width * height)) ** 0.5)
-        width, height = max(1, int(width * scale)), max(1, int(height * scale))
-        png = resvg_py.svg_to_bytes(
-            svg_string=ET.tostring(root, encoding="unicode"), width=width, height=height
-        )
-        with Image.open(BytesIO(png)) as rendered:
-            rgba = rendered.convert("RGBA")
-            background = Image.new("RGB", rgba.size, "white")
-            background.paste(rgba, mask=rgba.getchannel("A"))
-            target = (
-                workdir / "inference" / (hashlib.sha256(source.read_bytes()).hexdigest() + ".png")
-            )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            background.save(target, format="PNG")
-        return target
-    except Exception as exc:
+    except (ValueError, ET.ParseError) as exc:
         raise ValueError(
             "Unsupported source content: embedded SVG cannot be safely rendered"
         ) from exc
+    width, height = size
+    scale = min(1.0, 2048 / width, 2048 / height, (4_000_000 / (width * height)) ** 0.5)
+    width, height = max(1, int(width * scale)), max(1, int(height * scale))
+    png = resvg_py.svg_to_bytes(
+        svg_string=ET.tostring(root, encoding="unicode"), width=width, height=height
+    )
+    with Image.open(BytesIO(png)) as rendered:
+        rgba = rendered.convert("RGBA")
+        background = Image.new("RGB", rgba.size, "white")
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        target = workdir / "inference" / (hashlib.sha256(data).hexdigest() + ".png")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        background.save(target, format="PNG")
+    return target
 
 
 def _inline(value: Any) -> str:
@@ -362,6 +361,31 @@ def _spreadsheet_render_regions(
     return regions
 
 
+def _recoverable_conversion_error(exc: Exception) -> bool:
+    from docvortex.analyzers.native.epub.errors import EpubParseError
+    from docvortex.analyzers.native.html.errors import HtmlParseError
+    from docvortex.analyzers.native.ofd.errors import OfdParseError
+    from docvortex.analyzers.native.office.errors import (
+        LegacyOfficeMalformedError,
+        LegacyOfficeMissingPartError,
+    )
+    from docvortex.analyzers.native.office.odf.errors import OdfParseError
+    from docvortex.document.mhtml import MhtmlParseError
+
+    # Exact classes exclude subclasses for encryption and resource limits.
+    return type(exc) in {
+        EpubParseError,
+        HtmlParseError,
+        OfdParseError,
+        OdfParseError,
+        LegacyOfficeMalformedError,
+        LegacyOfficeMissingPartError,
+        MhtmlParseError,
+        zipfile.BadZipFile,
+        ET.ParseError,
+    }
+
+
 async def parse_native(
     path: Path, suffix: str, workdir: Path, pipeline: NativePipeline
 ) -> DocumentResult:
@@ -378,7 +402,7 @@ async def parse_native(
         raise ValueError("Unsupported source content: inline SVG preservation cannot be verified")
     needs_visual = bool(unsupported)
 
-    async def visual_fallback() -> DocumentResult:
+    async def visual_fallback(cause: Payload) -> DocumentResult:
         # A rendered sheet cannot provide complete cell semantics.
         if ext in {"xls", "xlsx", "ods", "csv", "tsv"}:
             raise ValueError(
@@ -396,7 +420,11 @@ async def parse_native(
             pdf, "rendered.pdf", "ocr", "standard", workdir / "libreoffice-fallback"
         )
         fallback.diagnostics.append(
-            {"stage": "libreoffice_conversion", "elapsed_seconds": conversion_elapsed}
+            {
+                "stage": "libreoffice_conversion",
+                "elapsed_seconds": conversion_elapsed,
+                "recovery_cause": cause,
+            }
         )
         for page in fallback.pages:
             page.metadata.update(
@@ -419,17 +447,27 @@ async def parse_native(
 
     # ext was checked against SUFFIXES above; ty cannot narrow it to DocVortex's
     # literal suffix union from that runtime set membership check.
+    source = await asyncio.to_thread(path.read_bytes)
     try:
-        result = await asyncio.to_thread(docvortex.parse, path.read_bytes(), file_suffix=ext)  # ty: ignore[invalid-argument-type]
-    except Exception:
-        return await visual_fallback()
+        result = await asyncio.to_thread(docvortex.parse, source, file_suffix=ext)  # ty: ignore[invalid-argument-type]
+    except Exception as exc:
+        if not _recoverable_conversion_error(exc):
+            raise
+        return await visual_fallback({"type": type(exc).__name__, "message": str(exc)})
     from .pipeline import _Diagnostics
 
     diagnostics = _Diagnostics(workdir / "diagnostics.jsonl")
     for d in result.diagnostics:
         diagnostics.append({"code": d.code, "message": d.message, "page_idx": d.page_index})
     if any(d.code == "broken_page" for d in result.diagnostics):
-        return await visual_fallback()
+        return await visual_fallback(
+            {
+                "diagnostics": [
+                    {"code": d.code, "message": d.message, "page_idx": d.page_index}
+                    for d in result.diagnostics
+                ]
+            }
+        )
     document = result.to_dict()
     source_words = await asyncio.to_thread(_ooxml_word_count, path, ext)
 
@@ -709,26 +747,40 @@ async def parse_native(
                     continue
                 if not pipeline.settings.captioning:
                     continue
-                captions = await pipeline._infer_valid(
-                    [inference_image],
-                    (PROMPTS / "figure_captioning.txt").read_text(),
-                    _structured,
-                    diagnostics,
-                    page.page_idx,
-                    "native_caption",
-                )
-                candidates = [item for item in captions if item["category"] in IMAGES]
-                if len(candidates) != 1:
-                    raise ValueError("Native image caption could not be matched unambiguously")
-                if block.metadata.get("asset_type", "unknown") == "unknown":
-                    kind = _figure_kind(candidates[0])
-                    if kind != "unknown":
-                        block.metadata["asset_type"] = kind
-                match = re.search(
-                    r"<caption>(.*?)</caption>", candidates[0]["content"], re.I | re.S
-                )
-                if not match or not match.group(1).strip():
-                    raise ValueError("Native image caption was missing")
+                try:
+                    captions = await pipeline._infer_valid(
+                        [inference_image],
+                        (PROMPTS / "figure_captioning.txt").read_text(),
+                        _structured,
+                        diagnostics,
+                        page.page_idx,
+                        "native_caption",
+                    )
+                    candidates = [item for item in captions if item["category"] in IMAGES]
+                    if len(candidates) != 1:
+                        raise ModelOutputError(
+                            "Native image caption could not be matched unambiguously"
+                        )
+                    if block.metadata.get("asset_type", "unknown") == "unknown":
+                        kind = _figure_kind(candidates[0])
+                        if kind != "unknown":
+                            block.metadata["asset_type"] = kind
+                    match = re.search(
+                        r"<caption>(.*?)</caption>", candidates[0]["content"], re.I | re.S
+                    )
+                    if not match or not match.group(1).strip():
+                        raise ModelOutputError("Native image caption was missing")
+                except ModelOutputError as exc:
+                    diagnostics.append(
+                        {
+                            "page_idx": page.page_idx,
+                            "stage": "native_caption",
+                            "status": "unresolved",
+                            "warning": str(exc),
+                            "source_image": block.image_source,
+                        }
+                    )
+                    continue
                 block.annotations.append(
                     Annotation(
                         "AI img desc",

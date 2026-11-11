@@ -1,5 +1,6 @@
 import asyncio
 import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -211,8 +212,9 @@ async def test_real_flatpak_smoke_when_requested(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["exception", "broken_page"])
 async def test_native_failure_fallback_labels_visual_provenance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     import docvortex
 
@@ -225,9 +227,20 @@ async def test_native_failure_fallback_labels_visual_provenance(
     source.write_bytes(b"not a zip")
     workdir = tmp_path / "work"
     workdir.mkdir()
-    monkeypatch.setattr(
-        docvortex, "parse", lambda *a, **kw: (_ for _ in ()).throw(ValueError("broken"))
-    )
+    if mode == "exception":
+        monkeypatch.setattr(
+            docvortex, "parse", lambda *a, **kw: (_ for _ in ()).throw(zipfile.BadZipFile("broken"))
+        )
+    else:
+        monkeypatch.setattr(
+            docvortex,
+            "parse",
+            lambda *a, **kw: SimpleNamespace(
+                diagnostics=[
+                    SimpleNamespace(code="broken_page", message="unreadable page", page_index=0)
+                ]
+            ),
+        )
 
     async def convert(self: LibreOfficeRenderer, source: Path, suffix: str, workdir: Path) -> Path:
         return tmp_path / "rendered.pdf"
@@ -242,6 +255,13 @@ async def test_native_failure_fallback_labels_visual_provenance(
     monkeypatch.setattr(pipeline, "parse", parse)
     result = await parse_native(source, "docx", workdir, pipeline)
     assert result.pages[0].blocks[0].metadata["source"] == "libreoffice_visual_fallback"
+    cause = result.diagnostics[0]["recovery_cause"]
+    if mode == "exception":
+        assert cause == {"type": "BadZipFile", "message": "broken"}
+    else:
+        assert cause == {
+            "diagnostics": [{"code": "broken_page", "message": "unreadable page", "page_idx": 0}]
+        }
     with pytest.raises(ValueError, match="cells cannot be recovered"):
         await parse_native(source, "xlsx", workdir, pipeline)
 

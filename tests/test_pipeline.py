@@ -1069,3 +1069,39 @@ def test_unquoted_bbox_image_is_normalized_before_asset_renaming(tmp_path: Path)
     finalize_asset_names(result)
     result.validate()
     assert '<img src="images/' in result.markdown() and "Table image 1" in result.markdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [1024, 20000])
+@pytest.mark.parametrize("structured", [False, True])
+async def test_task_requests_configured_output_budget(
+    tmp_path: Path, budget: int, structured: bool
+) -> None:
+    requested = []
+
+    class Model:
+        async def infer(
+            self,
+            images: list[Path],
+            prompt: str,
+            *,
+            max_tokens: int | None = None,
+            response_schema: Payload | None = None,
+        ) -> str:
+            requested.append((max_tokens, response_schema is not None))
+            return "[]" if structured else "source text"
+
+    settings = Settings()
+    settings.runtime.max_tokens = budget
+    image = tmp_path / "page.png"
+    Image.new("RGB", (10, 10), "white").save(image)
+    validator = _structured if structured else str
+    await Pipeline(settings, Model())._infer_valid(
+        [image],
+        prompt_for("document_structured") if structured else prompt_for("document_markdown"),
+        validator,
+        [],
+        0,
+        "structured" if structured else "advanced_markdown",
+    )
+    assert requested == [(budget, structured)]

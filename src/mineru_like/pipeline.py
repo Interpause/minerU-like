@@ -23,7 +23,7 @@ from typing import Any, Literal, TypeVar, cast, overload
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from .config import Settings
-from .contracts import Diagnostic, Inference, Payload
+from .contracts import Diagnostic, Inference, ModelOutputError, Payload
 from .geometry import ImageGeometry, ovis_size
 from .presentation import Annotation, unclear
 from .result import Block, DocumentResult, Page, transform_markup
@@ -843,41 +843,42 @@ class Pipeline:
                     raw = await self.runtime.infer(
                         selected,
                         prompt,
-                        max_tokens=min(self.settings.runtime.max_tokens, 16384),
+                        max_tokens=self.settings.runtime.max_tokens,
                         response_schema=schema,
                     )
                 else:
                     raw = await self.runtime.infer(
-                        selected, prompt, max_tokens=min(self.settings.runtime.max_tokens, 16384)
+                        selected, prompt, max_tokens=self.settings.runtime.max_tokens
                     )
-                candidate = (
-                    _clean_markdown(raw)
-                    if stage in {"advanced_markdown", "markdown_fallback"}
-                    else raw
-                )
-                entry.update(
-                    raw=getattr(raw, "raw_text", raw),
-                    finish_reason=getattr(raw, "finish_reason", None),
-                    usage=getattr(raw, "usage", None),
-                )
-                if candidate != raw:
-                    entry.update(cleaned=candidate, cleanup_applied=True)
-                if getattr(raw, "image_geometry", None) is not None:
-                    entry["image_geometry"] = [
-                        asdict(geometry) for geometry in getattr(raw, "image_geometry")
-                    ]
-                if getattr(raw, "finish_reason", None) == "length":
-                    entry.update(status="incomplete", warning="Model stopped at token limit")
-                    if stage not in {
-                        "structured",
-                        "table_page_recovery",
-                        "native_visual_transcription",
-                    }:
-                        raise ValueError("Incomplete inference response")
-                return validator(candidate)
-            except (ValueError, TypeError, KeyError) as exc:
-                errors.append(str(exc))
-                entry["error"] = str(exc)
+                try:
+                    candidate = (
+                        _clean_markdown(raw)
+                        if stage in {"advanced_markdown", "markdown_fallback"}
+                        else raw
+                    )
+                    entry.update(
+                        raw=getattr(raw, "raw_text", raw),
+                        finish_reason=getattr(raw, "finish_reason", None),
+                        usage=getattr(raw, "usage", None),
+                    )
+                    if candidate != raw:
+                        entry.update(cleaned=candidate, cleanup_applied=True)
+                    if getattr(raw, "image_geometry", None) is not None:
+                        entry["image_geometry"] = [
+                            asdict(geometry) for geometry in getattr(raw, "image_geometry")
+                        ]
+                    if getattr(raw, "finish_reason", None) == "length":
+                        entry.update(status="incomplete", warning="Model stopped at token limit")
+                        if stage not in {
+                            "structured",
+                            "table_page_recovery",
+                            "native_visual_transcription",
+                        }:
+                            raise ValueError("Incomplete inference response")
+                    return validator(candidate)
+                except (ValueError, TypeError, KeyError) as exc:
+                    errors.append(str(exc))
+                    entry["error"] = str(exc)
             except BaseException as exc:
                 entry["error"] = str(exc) or type(exc).__name__
                 raise
@@ -887,7 +888,9 @@ class Pipeline:
                 entry.setdefault("usage", getattr(raw, "usage", None))
                 entry["duration_seconds"] = time.monotonic() - started
                 diagnostics.append(entry)
-        raise ValueError(f"Page {page_idx + 1}: {stage} failed validation: {'; '.join(errors)}")
+        raise ModelOutputError(
+            f"Page {page_idx + 1}: {stage} failed validation: {'; '.join(errors)}"
+        )
 
     async def parse(
         self, input_path: Path, filename: str, ocr_mode: str, tier: str, workdir: Path
@@ -1396,7 +1399,7 @@ class Pipeline:
                     idx,
                     "captions",
                 )
-            except ValueError as exc:
+            except ModelOutputError as exc:
                 diagnostics.append(
                     {
                         "page_idx": idx,
