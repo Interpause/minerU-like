@@ -66,3 +66,32 @@ Direct pytest does not create the runner's transcript log. The direct pytest inv
 The live suite verifies both OvisOCR3 EOS tokens with token-biased requests, requests more images than configured slots, cancels a request while a sibling completes, and retains token-limit metadata. It does not change the backend stop configuration. CUDA runs sample the managed process memory and check a 5 GiB small-image smoke budget; this does not establish a peak for dense pages, two-image reconstruction or sustained jobs. External-server memory must be measured by its operator. Evidence is saved under the configured data directory at `validation/live-runtime.json`.
 
 Real deployment validation still needs a representative document corpus and an actual Zotero GUI session. A controlled-parser plugin test verifies request/result compatibility, not model accuracy; a passing live OCR smoke is not a quality benchmark. See [remaining work](../TODO.md).
+
+## 0.4.0 transcript and reference checks
+
+The focused rendering, pipeline, native, table and asset tests generate their own temporary inputs. They exercise source order, full captions, furniture/counters, code/math preservation, bbox coordinates (including rotated PDF and cropped inputs), reference transformations and atomic publication. See [content rendering](CONTENT_RENDERING.md) for the source baseline and limits.
+
+The extended existing plugin test invokes V1 normalization through the controlled server, cache collision/length normalization, chunk merging, embed stripping, PDF crop-cache writers and source-image pruning. Gecko filesystem calls use an in-memory adapter; the plugin source is unchanged. It asserts that crop links resolve before pruning and can remain dangling afterward, without retargeting. Run with Node 26+, TypeScript and fflate installed as described above:
+
+```bash
+uv run --locked python scripts/run_tests.py --plugin -q tests/integration/test_plugin_client.py
+```
+
+For deployment validation, configure the actual CUDA backend, cwebp and host LibreOffice, then run the strict no-skips suite:
+
+```bash
+uv run --locked python scripts/run_tests.py --all
+uv run --locked mineru-like doctor --config config.local.toml --smoke sample.docx
+```
+
+The first command checks the available integrations, including CUDA smoke behavior when CUDA is configured; it does not establish dense-document memory headroom. The second checks actual host conversion and reports a PDF to inspect.
+
+To reproduce each private failing document, start the configured service and submit the original input, choosing a new output filename each time:
+
+```bash
+uv run --locked mineru-like serve --config config.local.toml --device cuda
+# In another terminal, with an original PDF available:
+uv run --locked mineru-like submit /path/to/original.pdf --tier standard --wait --output /path/to/new-result.zip
+```
+
+Pass `--api-key` to `submit` if authentication is configured. Inspect the ZIP's Markdown, structured source fragments, image targets and diagnostics; correlate any failure with its job ID and retained evidence. Repeat with representative dense pages and observe process VRAM separately. The three earlier logged jobs remain unreproduced until their originals or retained raw diagnostics are available. Finally, verify real Zotero display, chunk boundaries and visual-tool access before/after figure-cache cleanup; the controlled integration cannot establish those GUI behaviors.

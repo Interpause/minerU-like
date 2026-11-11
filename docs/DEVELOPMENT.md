@@ -1,5 +1,7 @@
 # Development
 
+See [content rendering contracts](CONTENT_RENDERING.md) for semantic annotations, running furniture, table projections and image-link lifecycle.
+
 Install the locked development dependencies and run the usual local checks from the repository root:
 
 ```sh

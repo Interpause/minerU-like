@@ -13,7 +13,7 @@ Current remaining work; historical release evidence is retained in the changelog
 
 ## High-priority exploration — deferred
 
-- [ ] Compare Standard's scheduling, call graph and throughput with MinerU's implementation. Profile CPU preparation, backend queuing/slots/token batches, optional recovery/caption/table passes and artifact work against a serial baseline on representative CUDA workloads. Explore additional concurrency optimizations or an explicit effort tier below Standard with measured quality/latency tradeoffs; verify how the unchanged plugin could select it. Preserve official Ovis task contracts and distinguish removable work from backend memory limits. This exploration is high priority but deferred beyond the current lecture-PDF investigation.
+- [ ] Compare Standard's scheduling, call graph and throughput with MinerU's implementation. Profile CPU preparation, backend queuing/slots/token batches, optional recovery/caption/table passes and artifact work against a serial baseline on representative CUDA workloads. Explore additional concurrency optimizations or an explicit effort tier below Standard with measured quality/latency tradeoffs; verify how the unchanged plugin could select it. Preserve official Ovis task contracts and distinguish removable work from backend memory limits. This exploration is high priority but deferred beyond the 0.4.0 semantic-rendering release.
 
 ## Missing or incomplete parsing capabilities
 
@@ -23,10 +23,13 @@ Current remaining work; historical release evidence is retained in the changelog
 - [ ] Expand source-feature inventory for complex layouts, shapes, math, and embedded content outside the currently covered Office structures, including OpenDocument and legacy binary formats.
 - [ ] Improve source-object matching beyond media/formula counts and text anchors. Distinguish individual missing objects, repeated objects, and benign conversion differences; reduce unmatched supplements without guessing page correspondence.
 - [ ] Extend table reconstruction beyond conservative single-table pairs/runs, including multiple candidate continuations, nonidentical repeated headers, and image-bearing intermediate pages. Identical repeated first-row deduplication is implemented. Preserve every source fragment and its assets.
-- [ ] Recover and materialize image references embedded inside model-generated table HTML when they cannot currently resolve to an asset; retain explicit failure rather than publishing broken markup.
 - [ ] Normalize native embedded image formats that the plugin cannot consume directly into supported delivery formats, with source preservation and frame handling. Direct image inputs already follow the visual conversion path.
 
 ## Remaining fidelity and format validation
+
+- [ ] Reproduce the three previously logged non-OOM failures using their original PDFs or retained raw diagnostics. Synthetic bbox regressions establish the failure class, not job-specific outcomes.
+- [ ] Run the expanded unchanged-plugin ordinary-link lifecycle integration with TypeScript and fflate available, then verify actual Zotero figure-cache pruning and viewing-agent visual access. See [content rendering](docs/CONTENT_RENDERING.md) for the accepted dangling-link limitation.
+- [ ] Review furniture/counter collapse and semantic annotations on a representative source corpus; generated regressions do not establish model classification quality.
 
 - [ ] Add representative real DOC, PPT, XLS, and OFD fixtures. Their adapters exist, but generated modern-format tests do not validate the legacy/native import paths.
 - [ ] Broaden real PNG/JPEG/WebP/GIF/BMP/TIFF/JP2 input coverage, including unusual encodings, transparency, multipage scans, animated/composited frames, and EXIF orientation.
@@ -39,8 +42,6 @@ Current remaining work; historical release evidence is retained in the changelog
 
 ## Delivery assets and compression
 
-- [ ] Design compact figure annotations for the canonical transcript: `[AI img desc: <crop_file_name>]`, one or two short sentences of key details, then a brief conservative inspection cue (dense labels/relationships need checking, or a likely decorative image has little added information). Preserve source captions and full raw model output, keep final crop identity traceable through asset renaming, and test that text anchors survive unchanged-plugin image stripping. Importance is not an official Ovis output field or a guaranteed model judgment; use existing evidence and qualify uncertain cues without changing task prompts/schema.
-- [ ] Preserve slide-furniture semantics in Markdown: collapse only corroborated repeated running headers/footers, retain cover text and substantive unique footer titles/URLs, and keep all original structured records. Add durable slide/figure anchors alongside normal image assets; cached image paths alone do not establish viewing-agent access through the plugin's separate visual tools.
 
 - [ ] Broaden source SVG export support for complex clipping, text positioning, definitions, fonts, and transparency while keeping text live and excluding unrelated page content. Preserve raster fallback for uncertain cases.
 - [ ] Validate SVG and raster appearance inside Zotero's actual rendering surfaces, not only the server's comparison renderer and ZIP normalizer.

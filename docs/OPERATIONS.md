@@ -80,3 +80,9 @@ The plugin lifecycle tests use a controlled parser; they do not run the model. L
 Runtime diagnostics distinguish model-call purpose/count/duration from `source_assets_cpu` and `compression_cpu` checks. The regression suite runs offline from the service: it is never executed during a parse.
 
 See [testing](TESTING.md) for prerequisites and commands and [remaining work](../TODO.md) for deployment validation.
+
+## Transcript images and bbox failures
+
+See [content rendering](CONTENT_RENDERING.md) for crop links and the accepted plugin cleanup limit: ordinary links resolve while their source images remain cached, but figure-cache pruning may remove those targets without retargeting the links. Use the viewing agent's visual tools afterward.
+
+Malformed model bbox references now produce localized notices and diagnostics; valid references are materialized before delivery. Rendering/filesystem/backend errors still fail the job, and ZIP publication remains atomic. To reproduce a particular previously logged job, retain its source PDF or raw failure diagnostics as described above. Synthetic regressions establish the known failure class, not those individual jobs. OOM investigation remains separate.

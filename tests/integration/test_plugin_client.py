@@ -14,6 +14,7 @@ from PIL import Image
 
 from mineru_like.api import create_app
 from mineru_like.config import Settings
+from mineru_like.presentation import Annotation
 from mineru_like.processor import finalize_asset_names
 from mineru_like.result import Block, DocumentResult, Page
 
@@ -58,7 +59,14 @@ async def test_plugin_client_lifecycle(
                     0,
                     [
                         Block("doc_title", "Fixture title"),
-                        Block("image", "", image_source=f"images/figure.{asset_format}"),
+                        Block(
+                            "image",
+                            "",
+                            image_source=f"images/figure.{asset_format}",
+                            annotations=[
+                                Annotation("AI img desc", "A synthetic square.", generated=True)
+                            ],
+                        ),
                     ],
                 )
             ],
