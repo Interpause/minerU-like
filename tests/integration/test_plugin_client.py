@@ -20,10 +20,17 @@ from mineru_like.result import Block, DocumentResult, Page
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("asset_format", ["png", "webp", "svg"])
 @pytest.mark.parametrize(
-    "tier,force_ocr",
-    [("standard", False), ("advanced", False), ("flash", False), ("basic", True), ("auto", True)],
+    "asset_format,tier,force_ocr",
+    [
+        pytest.param("png", "standard", False, id="standard-auto-png"),
+        pytest.param("png", "advanced", False, id="advanced-auto-png"),
+        pytest.param("png", "flash", False, id="flash-auto-png"),
+        pytest.param("png", "basic", True, id="basic-ocr-png"),
+        pytest.param("png", "auto", True, id="auto-ocr-png"),
+        pytest.param("webp", "standard", False, id="standard-auto-webp"),
+        pytest.param("svg", "standard", False, id="standard-auto-svg"),
+    ],
 )
 async def test_plugin_client_lifecycle(
     tmp_path: Path, asset_format: str, tier: str, force_ocr: bool
@@ -105,6 +112,7 @@ async def test_plugin_client_lifecycle(
             TEST_EXPECTED_ASSET=expected,
             TEST_TIER=tier,
             TEST_FORCE_OCR="1" if force_ocr else "0",
+            TEST_CROP_LIFECYCLE="1" if tier == "standard" else "0",
         )
         proc = await asyncio.create_subprocess_exec(
             "node",

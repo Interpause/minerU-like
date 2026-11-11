@@ -6,8 +6,8 @@ import pytest
 
 from mineru_like.native import _nested
 from mineru_like.pipeline import CATEGORIES
-from mineru_like.presentation import Annotation, annotation, unclear
-from mineru_like.result import Block, DocumentResult, Page, TableBodyProjection
+from mineru_like.presentation import Annotation, annotation, unclear, visual_description
+from mineru_like.result import Block, DocumentResult, Page, TableBodyProjection, image_references
 
 
 def test_complete_annotations_and_plain_formula_notice() -> None:
@@ -19,15 +19,64 @@ def test_complete_annotations_and_plain_formula_notice() -> None:
     notice = unclear("formula", "pg 7, approx. lower-right")
     assert notice == "[Unclear formula; pg 7, approx. lower-right; zoom if possible.]"
     assert Block("equation", notice).markdown() == notice
+    assert visual_description("Full caption.", "images/final.webp") == (
+        "[AI img desc] [crop](images/final.webp) Full caption. "
+        "Inspect exact labels and relationships if needed."
+    )
+    assert visual_description("A photograph.", "images/photo.webp", photograph=True) == (
+        "[AI img desc] [crop](images/photo.webp) A photograph. "
+        "Inspect appearance or identity if needed."
+    )
 
 
 @pytest.mark.parametrize("category", sorted(CATEGORIES))
-def test_every_ovis_role_preserves_source(category: str) -> None:
-    content = r"Source $x$ … \cdots [citation](https://example.org)"
+def test_every_ovis_role_preserves_its_source_semantics(category: str) -> None:
+    examples = {
+        "abstract": ("Summary of $x$.", "Abstract"),
+        "algorithm": ("1. Read $x$.\n2. Return $x+1$.", ""),
+        "aside_text": ("An author's aside.", "Aside"),
+        "content": ("Paragraph with [citation](https://example.org).", ""),
+        "display_formula": (r"\frac{x_1}{y^2}", ""),
+        "doc_title": ("Document title", ""),
+        "figure_title": ("Figure 1. Source caption.", "Caption"),
+        "footer": ("Source footer", "Running footer"),
+        "footnote": ("1. Original footnote.", "Footnote"),
+        "formula_number": ("(12)", ""),
+        "header": ("Lecture 5", "Running header"),
+        "inline_formula": (r"x_1+\alpha", ""),
+        "number": ("42", ""),
+        "paragraph_title": ("#### Subsection", ""),
+        "reference_content": ("[1] [Paper](https://example.org/paper).", "References"),
+        "table": ('<table><tr><td rowspan="2">A</td></tr><tr></tr></table>', ""),
+        "text": (r"Source $x$ … \cdots", ""),
+        "vertical_text": ("First\nSecond", ""),
+        "vision_footnote": ("Source figure annotation.", "Figure note"),
+    }
+    graphics = {"image", "chart", "header_image", "footer_image", "seal"}
+    assert examples.keys() | graphics == CATEGORIES
+    if category in graphics:
+        block = Block(category, "", image_source="images/source.webp")
+        markdown = block.markdown()
+        assert set(image_references(markdown)) == {"images/source.webp"}
+        assert "![" in markdown and "[crop]" in markdown
+        assert "AI img desc" not in markdown
+        return
+    content, role = examples[category]
     block = Block(category, content)
-    assert content in block.markdown()
-    assert block.content == content
-    assert "[AI img desc]" not in block.markdown()
+    markdown = block.markdown()
+    assert content in markdown and block.content == content
+    if role:
+        assert role in markdown and role not in block.markdown(reader=False)
+    elif category == "doc_title":
+        assert markdown.startswith("# ")
+    elif category == "paragraph_title":
+        assert markdown.startswith("#### ")
+    elif category == "inline_formula":
+        assert markdown == "$" + content + "$"
+    elif category == "display_formula":
+        assert markdown.startswith("$$") and markdown.endswith("$$")
+    else:
+        assert markdown == content
 
 
 def test_heading_code_algorithm_and_source_mermaid() -> None:
@@ -87,7 +136,7 @@ def test_ordered_provenance_keeps_evidence_and_full_generated_caption() -> None:
     md = block.markdown()
     assert md.index("Above") < md.index("![image]") < md.index("Below") < md.index("[AI img desc]")
     assert caption in md and "[crop](images/final.webp)" in md
-    assert "Inspect exact labels and relationships" in md
+    assert set(image_references(md)) == {"images/final.webp"}
     source = block.markdown(reader=False)
     assert "Above" in source and "Below" in source
     assert "[Caption]" not in source and caption not in source
@@ -116,8 +165,8 @@ def _pages(
 def test_exact_and_inferred_furniture_threshold_and_structured_retention() -> None:
     result = DocumentResult(_pages(["Lecture 5"] * 3))
     assert result.markdown().count("Lecture 5") == 1
-    assert "[Running header; pg 1–3: Lecture 5]" in result.markdown()
-    assert str(result.structured()).count("Lecture 5") == 3
+    assert "Running header" in result.markdown() and "1–3" in result.markdown()
+    assert [p["blocks"][0]["content"] for p in result.structured()["pages"]] == ["Lecture 5"] * 3
     assert DocumentResult(_pages(["Stable"] * 4, "text")).markdown().count("Stable") == 4
     assert DocumentResult(_pages(["Stable"] * 5, "text")).markdown().count("Stable") == 1
 
@@ -133,7 +182,10 @@ def test_coverage_gaps_odd_even_offsets_and_roman_numbering() -> None:
     roman = DocumentResult(_pages(["i", "ii", "iii"], "number"))
     assert "1–3→i–iii" in roman.markdown()
     assert DocumentResult(_pages(["1", "2", "3"], "number")).markdown().count("Running") == 0
-    assert "'content': '2'" in str(DocumentResult(_pages(["1", "2", "3"], "number")).structured())
+    assert [
+        p["blocks"][0]["content"]
+        for p in DocumentResult(_pages(["1", "2", "3"], "number")).structured()["pages"]
+    ] == ["1", "2", "3"]
 
 
 @pytest.mark.parametrize(
@@ -193,7 +245,7 @@ def test_table_body_projection_preserves_notes_order_and_assets(tmp_path: Path) 
     md = result.markdown()
     assert md.count("<table>") == 1 and "original" not in md
     assert md.index("First") < md.index("Note") < md.index("Intervening") < md.index("Second")
-    assert "[Table image 1] [crop](images/x.png)" in md
+    assert "Table image 1" in md and set(image_references(md)) == {"images/x.png"}
     assert result.structured()["pages"][0]["blocks"][0]["content"] == source
 
 

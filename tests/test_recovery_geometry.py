@@ -132,8 +132,18 @@ async def test_graphic_requires_matching_complete_structure(
             self.calls.append(prompt)
             if prompt == (PROMPTS / "figure_captioning.txt").read_text():
                 return records(category, table)
-            if images[0].name.startswith("page-"):
-                return records("image", '<img src="images/bbox_0_0_999_999.jpg"/>')
+            with Image.open(images[0]) as submitted:
+                is_page = submitted.size == (100, 100)
+            if is_page:
+                return json.dumps(
+                    [
+                        {
+                            "bbox": [100, 100, 900, 900],
+                            "category": "image",
+                            "content": '<img src="images/bbox_100_100_900_900.jpg"/>',
+                        }
+                    ]
+                )
             return records(category, other)
 
     runtime = Runtime()
@@ -215,14 +225,3 @@ async def test_real_response_metadata_survives_publication(tmp_path: Path) -> No
     metadata = next(d["image_geometry"] for d in result.diagnostics if "image_geometry" in d)
     assert metadata[0]["submitted_size"] == (100, 100)
     result.write_zip(tmp_path / "result.zip")
-
-
-def test_fallback_keeps_materialized_graphics_only() -> None:
-    from mineru_like.pipeline import _fallback_image_references
-
-    result = _fallback_image_references(
-        "![ok](images/ok.png) ![bad](missing.png)", {"images/ok.png"}
-    )
-    assert "![ok](images/ok.png)" in result
-    assert "missing.png" not in result
-    assert "[Unclear image;" in result

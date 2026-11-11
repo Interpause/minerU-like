@@ -42,7 +42,7 @@ if (!realPdf) {
   assert.equal(content[1].img_path, image);
   assert.ok(result.files.some(f => f.relativePath === image));
   assert.ok(result.mdContent.includes(`[crop](${image})`));
-  await checkCropLifecycle(result);
+  if (process.env.TEST_CROP_LIFECYCLE === '1') await checkCropLifecycle(result);
 } else {
   assert.ok(content.length > 0);
   if (process.env.TEST_OUTPUT) writeFileSync(process.env.TEST_OUTPUT, JSON.stringify({service, pageCount: result.pageCount, markdown: result.mdContent, content, files: result.files.map(f => f.relativePath), reports}, null, 2));

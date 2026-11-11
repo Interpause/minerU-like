@@ -107,7 +107,7 @@ async def test_diagram_label_remains_text_when_rendering_matches(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_rotated_page_figure_is_validated_or_falls_back(tmp_path: Path) -> None:
+async def test_rotated_vector_figure_exports_validated_svg(tmp_path: Path) -> None:
     pdf = pymupdf.open()
     page = pdf.new_page(width=500, height=500)
     page.draw_rect(pymupdf.Rect(110, 110, 390, 390), color=(0, 0, 0), width=2)

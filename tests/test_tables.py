@@ -20,11 +20,19 @@ def table(*cells: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_three_page_reconstruction_renders_intermediate(tmp_path: Path) -> None:
+async def test_three_page_reconstruction_renders_intermediate_and_preserves_source(
+    tmp_path: Path,
+) -> None:
+    source_images = []
+    pages = []
     for i in range(3):
-        Image.new("RGB", (10, 10), "white").save(tmp_path / f"page-{i}.png")
-    result = DocumentResult([Page(i, [Block("table", table(str(i)))]) for i in range(3)])
-    calls = []
+        path = tmp_path / f"page-{i}.png"
+        Image.new("RGB", (10, 10), (i, 0, 0)).save(path)
+        source_images.append(path)
+        pages.append(Page(i, [Block("text", f"paragraph {i}"), Block("table", table(str(i)))]))
+    result = DocumentResult(pages)
+    calls: list[tuple[list[Path], str]] = []
+    rendered: list[tuple[str, Path]] = []
 
     class Runtime:
         async def infer(
@@ -39,21 +47,24 @@ async def test_three_page_reconstruction_renders_intermediate(tmp_path: Path) ->
             content = table("1", "2") if len(calls) == 1 else table("0", "1", "2")
             return json.dumps([{"source_pages": [1, 2], "html": content}])
 
-    rendered = []
-
     async def render_html(value: str, output: Path) -> None:
-        rendered.append(value)
+        rendered.append((value, output))
         Image.new("RGB", (20, 20), "white").save(output)
 
-    count = await reconstruct_tables(result, tmp_path, Runtime(), render_html, max_tokens=1000)
-    assert count == 2
-    assert calls[0][0] == [tmp_path / "page-1.png", tmp_path / "page-2.png"]
-    assert calls[1][0][1] == tmp_path / "table-recursive-1.png"
-    assert table("1", "2") in rendered[0] and table("1", "2") in calls[1][1]
-    assert result.table_bodies
-    assert result.markdown_override is None
+    assert await reconstruct_tables(result, tmp_path, Runtime(), render_html, max_tokens=1000) == 2
+    assert len(calls) == 2 and len(rendered) == 1
+    assert calls[0][0] == source_images[1:]
+    assert calls[1][0] == [source_images[0], rendered[0][1]]
+    assert table("1", "2") in rendered[0][0] and "paragraph 1" in rendered[0][0]
+    assert table("1", "2") in calls[1][1] and "paragraph 1" in calls[1][1]
+    assert result.table_bodies and result.markdown_override is None
     assert result.markdown().count("<table>") == 1
-    assert all(len(page.blocks) == 1 for page in result.pages)
+    assert table("0", "1", "2") in result.markdown()
+    for i, page in enumerate(result.pages):
+        assert len(page.blocks) == 2
+        assert page.blocks[1].content == table(str(i))
+        assert f"paragraph {i}" in result.markdown()
+    assert result.diagnostics[-1]["source_pages"] == [0, 1, 2]
 
 
 @pytest.mark.asyncio
@@ -191,40 +202,6 @@ async def test_recovery_and_truncated_fragment(tmp_path: Path) -> None:
     assert result.table_bodies
     assert result.markdown_override is None
     assert "paragraph" in result.markdown()
-
-
-@pytest.mark.asyncio
-async def test_three_page_merge_preserves_non_table_content(tmp_path: Path) -> None:
-    result = DocumentResult(
-        [
-            Page(i, [Block("text", f"paragraph {i}"), Block("table", table(str(i)))])
-            for i in range(3)
-        ]
-    )
-
-    class Runtime:
-        async def infer(
-            self,
-            images: list[Path],
-            prompt: str,
-            *,
-            max_tokens: int | None = None,
-            response_schema: Payload | None = None,
-        ) -> str:
-            cells = ("1", "2") if images[0].name == "page-1.png" else ("0", "1", "2")
-            if cells[0] == "0":
-                assert "paragraph 1" in prompt and table("1", "2") in prompt
-            return json.dumps([{"source_pages": [1, 2], "html": table(*cells)}])
-
-    async def render(value: str, output: Path) -> None:
-        assert "paragraph 1" in value
-        Image.new("RGB", (10, 10), "white").save(output)
-
-    assert await reconstruct_tables(result, tmp_path, Runtime(), render, max_tokens=100) == 2
-    assert result.table_bodies
-    assert result.markdown_override is None
-    assert all(f"paragraph {i}" in result.markdown() for i in range(3))
-    assert result.diagnostics[-1]["source_pages"] == [0, 1, 2]
 
 
 @pytest.mark.asyncio

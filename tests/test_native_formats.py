@@ -120,6 +120,8 @@ async def test_native_format_real_conversion(tmp_path: Path, ext: str) -> None:
     result.validate()
     assert "Native marker" in result.markdown()
     assert "alpha 42" in result.markdown()
+    if ext == "csv":
+        assert result.pages[0].blocks[0].type == "table"
 
 
 @pytest.mark.asyncio

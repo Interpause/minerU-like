@@ -99,15 +99,9 @@ async def test_native_svg_reaches_inference_and_remains_an_asset(
 
 
 @pytest.mark.asyncio
-async def test_real_csv_conversion(tmp_path: Path) -> None:
+async def test_native_input_rejects_advanced_verification(tmp_path: Path) -> None:
     path = tmp_path / "sample.csv"
     path.write_text("name,value\nalpha,42\n")
-    result = await Pipeline(Settings(), cast(Inference, None)).parse(
-        path, path.name, "auto", "standard", tmp_path / "out"
-    )
-    assert result.pages[0].blocks[0].type == "table"
-    assert "alpha" in result.markdown()
-    result.validate()
     with pytest.raises(ValueError, match="Advanced verification"):
         await Pipeline(Settings(), cast(Inference, None)).parse(
             path, path.name, "auto", "advanced", tmp_path / "advanced"

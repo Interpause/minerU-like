@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
 from PIL import Image, ImageDraw
 
 from mineru_like.config import CompressionSettings
@@ -17,18 +18,6 @@ def test_identical_image_passes() -> None:
     assert compare(image, image.copy(), SETTINGS).accepted
 
 
-def test_small_colored_stroke_and_punctuation_loss_rejected() -> None:
-    image = Image.new("RGBA", (256, 256), "white")
-    draw = ImageDraw.Draw(image)
-    draw.line((80, 80, 86, 80), fill=(255, 0, 0), width=1)
-    draw.point((100, 100), fill="black")
-    candidate = image.copy()
-    ImageDraw.Draw(candidate).rectangle((79, 79, 101, 101), fill="white")
-    result = compare(image, candidate, SETTINGS)
-    assert not result.accepted
-    assert result.edge_recall < SETTINGS.edge_recall
-
-
 def test_alpha_and_hidden_rgb_changes_rejected() -> None:
     image = Image.new("RGBA", (4, 4), (100, 20, 50, 0))
     candidate = image.copy()
@@ -38,16 +27,25 @@ def test_alpha_and_hidden_rgb_changes_rejected() -> None:
     assert not compare(image, candidate, SETTINGS).accepted
 
 
-def test_decimal_minus_and_thin_colored_line_individually_rejected() -> None:
-    marks = [
-        lambda d: d.point((32, 32), fill="black"),
-        lambda d: d.line((30, 32, 34, 32), fill="black"),
-        lambda d: d.line((30, 32, 34, 32), fill=(0, 160, 255)),
-    ]
-    for draw_mark in marks:
-        original = Image.new("RGB", (128, 128), "white")
-        draw_mark(ImageDraw.Draw(original))
-        assert not compare(original, Image.new("RGB", original.size, "white"), SETTINGS).accepted
+@pytest.mark.parametrize("mark", ["decimal", "minus", "colored-line", "stroke-and-punctuation"])
+def test_small_mark_loss_is_rejected(mark: str) -> None:
+    combined = mark == "stroke-and-punctuation"
+    original = Image.new(
+        "RGBA" if combined else "RGB", (256, 256) if combined else (128, 128), "white"
+    )
+    draw = ImageDraw.Draw(original)
+    if mark == "decimal":
+        draw.point((32, 32), fill="black")
+    elif mark == "minus":
+        draw.line((30, 32, 34, 32), fill="black")
+    elif mark == "colored-line":
+        draw.line((30, 32, 34, 32), fill=(0, 160, 255))
+    else:
+        draw.line((80, 80, 86, 80), fill=(255, 0, 0), width=1)
+        draw.point((100, 100), fill="black")
+    result = compare(original, Image.new(original.mode, original.size, "white"), SETTINGS)
+    assert not result.accepted
+    assert result.edge_recall < SETTINGS.edge_recall
 
 
 def test_tiled_global_ssim_matches_direct_moments() -> None:

@@ -127,9 +127,10 @@ async def test_unreadable_formula_placeholder(context: Path) -> None:
     page = Page(0, [Block("equation", r"x_{", bbox=(0.7, 0.4, 0.9, 0.6))])
     diagnostics: list[Diagnostic] = []
     await verify_suspicious_regions(pipeline, page, context, diagnostics)
-    assert (
-        page.blocks[0].content == "[Unclear formula; pg 1, approx. middle-right; zoom if possible.]"
-    )
+    notice = page.blocks[0].content
+    assert "Unclear formula" in notice and "pg 1" in notice
+    assert "middle-right" in notice and "zoom" in notice
+    assert r"x_{" not in notice and r"\frac" not in notice
     assert diagnostics[-1]["initial"] == r"x_{"
     assert len(page.blocks) == 1
 
@@ -204,7 +205,7 @@ async def test_targeted_formula_must_be_one_framed_expression(context: Path) -> 
     for response in ("nonsense", "$$x$$ $$y$$", "The answer is x"):
         page = Page(0, [Block("equation", "$x+$", bbox=(0, 0, 1, 1))])
         await verify_suspicious_regions(Pipeline(region=response), page, context, [])
-        assert page.blocks[0].content.startswith("[Unclear formula;")
+        assert page.blocks[0].content.startswith("[Unclear formula")
 
 
 @pytest.mark.asyncio
@@ -255,7 +256,7 @@ async def test_unsafe_or_missing_crop_retains_no_broken_formula(context: Path) -
     for bbox in (None, (0.0, 0.0, 1.0, 1.0)):
         page = Page(0, [Block("equation", "x_{", bbox=bbox)])
         await verify_suspicious_regions(Pipeline(), page, context, [], lambda **kwargs: None)
-        assert page.blocks[0].content.startswith("[Unclear formula;")
+        assert page.blocks[0].content.startswith("[Unclear formula")
 
 
 @pytest.mark.asyncio
@@ -351,7 +352,7 @@ async def test_formula_placeholder_renders_as_plain_text(context: Path) -> None:
     assert block.type == "text"
     assert block.metadata["verification_original_type"] == "inline_formula"
     assert block.markdown() == block.content
-    assert block.content.startswith("[Unclear formula;")
+    assert block.content.startswith("[Unclear formula")
 
 
 def test_single_atom_script_braces_are_presentation_only() -> None:

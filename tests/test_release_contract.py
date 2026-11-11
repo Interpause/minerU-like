@@ -11,13 +11,16 @@ from mineru_like.config import Settings
 
 def test_health_version_and_unmodeled_response_schema(tmp_path: Path) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
-        assert client.get("/v1/health").json() == {
+        health = client.get("/v1/health").json()
+        expected = {
             "status": "ok",
             "version": __version__,
-            "features": {"sources": ["file_id"], "output_formats": ["zip"]},
             "engine_status": "unconfigured",
             "engine_device": None,
         }
+        assert expected.items() <= health.items()
+        assert "file_id" in health["features"]["sources"]
+        assert "zip" in health["features"]["output_formats"]
         paths = client.get("/openapi.json").json()["paths"]
         for path, method in (("/v1/health", "get"), ("/v1/parse/jobs", "post")):
             status = "202" if method == "post" else "200"

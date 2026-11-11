@@ -4,13 +4,14 @@ from zipfile import ZipFile
 
 import pytest
 
-from mineru_like.result import Block, DocumentResult, Page
+from mineru_like.presentation import Annotation
+from mineru_like.result import Block, DocumentResult, Page, image_references
 
 
 def test_plugin_artifact_retains_generated_caption(tmp_path: Path) -> None:
     image = tmp_path / "figure.png"
     image.write_bytes(b"source crop")
-    description = "[AI-generated image description; supplemental] A plot."
+    description = "A complete generated description. " * 120
     result = DocumentResult(
         [
             Page(
@@ -20,7 +21,10 @@ def test_plugin_artifact_retains_generated_caption(tmp_path: Path) -> None:
                         "image",
                         "",
                         image_source="images/figure.png",
-                        captions=["Figure 1. Original", description],
+                        annotations=[
+                            Annotation("Caption", "Figure 1. Original", before=True),
+                            Annotation("AI img desc", description, generated=True),
+                        ],
                     )
                 ],
             )
@@ -30,9 +34,21 @@ def test_plugin_artifact_retains_generated_caption(tmp_path: Path) -> None:
     output = tmp_path / "result.zip"
     result.write_zip(output)
     with ZipFile(output) as archive:
-        assert description in archive.read("markdown.md").decode()
+        markdown = archive.read("markdown.md").decode()
+        assert description in markdown
+        assert (
+            markdown.index("Figure 1. Original")
+            < markdown.index("![image]")
+            < markdown.index(description)
+        )
+        assert "[AI img desc]" in markdown
+        assert set(image_references(markdown)) == {"images/figure.png"}
         structured = json.loads(archive.read("structured_content.json"))
-        assert structured["pages"][0]["blocks"][0]["captions"][1] == {"content": description}
+        block = structured["pages"][0]["blocks"][0]
+        assert block["captions"][0] == {"content": "Figure 1. Original"}
+        assert description in block["captions"][1]["content"]
+        assert "[AI img desc]" in block["captions"][1]["content"]
+        assert "annotations" not in block
         assert archive.read("images/figure.png") == image.read_bytes()
 
 

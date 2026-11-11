@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PIL import Image, ImageDraw
@@ -10,7 +11,7 @@ from reportlab.pdfgen import canvas
 
 from mineru_like.config import Settings
 from mineru_like.contracts import Diagnostic, Inference, Payload
-from mineru_like.pipeline import Pipeline, _assessment, _clean_markdown, _structured
+from mineru_like.pipeline import PROMPTS, Pipeline, _assessment, _clean_markdown, _structured
 from mineru_like.result import DocumentResult, Page
 from mineru_like.verification import VerificationPipeline
 
@@ -24,6 +25,20 @@ def test_existing_ovis_classifications_supply_encoder_hints() -> None:
         == "photo"
     )
     assert _figure_kind({"category": "image", "content": "<img/>"}) == "unknown"
+
+
+def prompt_for(task: str) -> str:
+    return (PROMPTS / f"{task}.txt").read_text()
+
+
+def write_table_pages(path: Path, count: int) -> None:
+    # Distinct source pixels identify pages even when preparation renames their files.
+    frames = [Image.new("RGB", (100, 100), (8 + i, 8, 8)) for i in range(count)]
+    try:
+        frames[0].save(path, save_all=True, append_images=frames[1:])
+    finally:
+        for frame in frames:
+            frame.close()
 
 
 class Runtime:
@@ -43,10 +58,10 @@ class Runtime:
         response_schema: Payload | None = None,
     ) -> str:
         self.calls.append((images, prompt))
-        if '"category": "string"}' in prompt:
+        if prompt == prompt_for("document_layout"):
             return next(self.layouts)[7:]
         reply = next(self.replies)
-        if "Target region:" in prompt:
+        if prompt == prompt_for("region_ocr").replace("{target_region}", "[0, 0, 999, 999]"):
             try:
                 return " ".join(item["content"] for item in json.loads(reply))
             except (ValueError, TypeError, KeyError):
@@ -80,16 +95,13 @@ class TableRuntime:
         self.calls.append((images, prompt))
         if len(images) > 1:
             return next(self.merges)
-        if '"category": "string"}' in prompt:
+        if prompt == prompt_for("document_layout"):
             return assessment(tables=True)[7:]
-        name = Path(images[0]).name
-        index = int(name.split("-")[1].split(".")[0])
-        if (
-            prompt
-            == (
-                Path(__file__).parents[1] / "src/mineru_like/prompts/document_markdown.txt"
-            ).read_text()
-        ):
+        with Image.open(images[0]) as page_image:
+            marker = cast(tuple[int, int, int], page_image.convert("RGB").getpixel((0, 0)))
+        index = marker[0] - 8
+        assert 0 <= index < len(self.outputs), "Unrecognized source-page marker"
+        if prompt == prompt_for("document_markdown"):
             return self.markdown[index]
         if self.first_page is not None:
             if index != self.first_page:
@@ -156,7 +168,7 @@ async def test_scan_backed_pdf_does_not_reuse_stale_text(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_digital_prose_reused_beside_visual_formula(tmp_path: Path) -> None:
+async def test_digital_pdf_prose_and_formula_use_visual_reading(tmp_path: Path) -> None:
     path = tmp_path / "math.pdf"
     pdf = canvas.Canvas(str(path), pagesize=(200, 200))
     pdf.drawString(20, 160, "Accurate prose")
@@ -182,7 +194,9 @@ async def test_image_pages_and_assets(tmp_path: Path) -> None:
     path = tmp_path / "in.tiff"
     first = Image.new("RGB", (100, 100), "white")
     ImageDraw.Draw(first).rectangle((10, 10, 90, 90), fill="black")
-    first.save(path, save_all=True, append_images=[first])
+    second = first.copy()
+    second.putpixel((0, 0), (1, 0, 0))
+    first.save(path, save_all=True, append_images=[second])
     image = json.dumps([{"bbox": [100, 100, 900, 900], "category": "image", "content": "<img/>"}])
     caption = json.dumps(
         [
@@ -206,17 +220,14 @@ async def test_image_pages_and_assets(tmp_path: Path) -> None:
             max_tokens: int | None = None,
             response_schema: Payload | None = None,
         ) -> str:
-            if '"category": "string"}' in prompt:
+            if prompt == prompt_for("document_layout"):
                 return assessment()[7:]
-            if (
-                prompt
-                == (
-                    Path(__file__).parents[1] / "src/mineru_like/prompts/figure_captioning.txt"
-                ).read_text()
-            ):
+            if prompt == prompt_for("figure_captioning"):
                 return caption
-            if Path(images[0]).name == "page-1.png":
-                return structured()
+            with Image.open(images[0]) as submitted:
+                marker = cast(tuple[int, int, int], submitted.convert("RGB").getpixel((0, 0)))
+                if marker[0] == 1:
+                    return structured()
             self.count += 1
             return image
 
@@ -226,7 +237,10 @@ async def test_image_pages_and_assets(tmp_path: Path) -> None:
     )
     assert len(result.pages) == 2
     assert result.pages[0].blocks[0].annotations[0].content == "A square."
-    assert "[AI img desc] [crop](" in result.markdown()
+    from mineru_like.result import image_references
+
+    assert "AI img desc" in result.markdown()
+    assert result.pages[0].blocks[0].image_source in image_references(result.markdown())
     assert "```mermaid" not in result.markdown()
     assert any("<mermaid>" in str(d.get("raw", "")) for d in result.diagnostics)
     assert result.pages[0].blocks[0].image_source is not None
@@ -236,7 +250,7 @@ async def test_image_pages_and_assets(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_invalid_output_fails_instead_of_empty_success(tmp_path: Path) -> None:
+async def test_empty_structured_output_retains_explicit_fallback(tmp_path: Path) -> None:
     path = tmp_path / "input.png"
     Image.new("RGB", (20, 20), "black").save(path)
     runtime = Runtime([assessment(), "[]", "[]", "[]", "", "", ""])
@@ -259,8 +273,7 @@ async def test_cross_page_table_keeps_fragments_and_merges_markdown(
     tmp_path: Path, first_page: int
 ) -> None:
     path = tmp_path / "tables.tiff"
-    first = Image.new("RGB", (100, 100), "black")
-    first.save(path, save_all=True, append_images=[first])
+    write_table_pages(path, 2)
 
     def table(text: str) -> str:
         return json.dumps(
@@ -294,8 +307,7 @@ async def test_cross_page_table_keeps_fragments_and_merges_markdown(
 @pytest.mark.asyncio
 async def test_cross_page_table_rejects_invented_cells(tmp_path: Path) -> None:
     path = tmp_path / "tables.tiff"
-    frame = Image.new("RGB", (40, 40), "black")
-    frame.save(path, save_all=True, append_images=[frame])
+    write_table_pages(path, 2)
 
     def table(value: str) -> str:
         return json.dumps(
@@ -347,7 +359,7 @@ async def test_printed_figure_caption_is_associated_with_asset(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_advanced_verifies_page_and_rejects_material_mismatch(tmp_path: Path) -> None:
+async def test_advanced_records_agreement_and_unresolved_disagreement(tmp_path: Path) -> None:
     path = tmp_path / "input.png"
     Image.new("RGB", (20, 20), "black").save(path)
     runtime = Runtime([assessment(), structured("alpha"), "alpha"])
@@ -366,8 +378,7 @@ async def test_advanced_verifies_page_and_rejects_material_mismatch(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_advanced_pipeline_reconstructs_three_pages(tmp_path: Path) -> None:
     path = tmp_path / "tables.tiff"
-    first = Image.new("RGB", (100, 100), "black")
-    first.save(path, save_all=True, append_images=[first, first])
+    write_table_pages(path, 3)
 
     def html(text: str) -> str:
         return "<table>" + "".join(f"<tr><td>{v}</td></tr>" for v in text) + "</table>"
@@ -377,17 +388,14 @@ async def test_advanced_pipeline_reconstructs_three_pages(tmp_path: Path) -> Non
             [{"bbox": [0, 0, 1000, 1000], "category": "table", "content": html(text)}]
         )
 
-    replies = []
-    for letter in "ABC":
-        replies.extend([assessment(tables=True), output(letter)])
-    replies.extend([html(letter) for letter in "ABC"])
-    replies.extend(
+    runtime = TableRuntime(
+        [output(x) for x in "ABC"],
+        [html(x) for x in "ABC"],
         [
             json.dumps([{"source_pages": [1, 2], "html": html("BC")}]),
             json.dumps([{"source_pages": [1, 2], "html": html("ABC")}]),
-        ]
+        ],
     )
-    runtime = TableRuntime([output(x) for x in "ABC"], [html(x) for x in "ABC"], replies[-2:])
     result = await Pipeline(Settings(), runtime).parse(
         path, path.name, "auto", "advanced", tmp_path / "out"
     )
@@ -402,7 +410,10 @@ async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path: Path
     pdf = canvas.Canvas(str(path), pagesize=(72, 72))
     pdf.drawString(5, 35, "Hello")
     pdf.save()
-    settings = Settings()
+    settings = Settings(
+        render_dpi=144, advanced_render_dpi=216, max_image_side=1800, advanced_max_image_side=2700
+    )
+    original_settings = settings.model_dump()
     standard = Runtime([assessment(), structured("Hello")])
     advanced = Runtime([assessment(), structured("Hello"), "Hello"])
     result = await Pipeline(settings, standard).parse(
@@ -411,12 +422,12 @@ async def test_tiers_use_distinct_resolution_and_independent_pass(tmp_path: Path
     other = await Pipeline(settings, advanced).parse(
         path, path.name, "ocr", "advanced", tmp_path / "a"
     )
-    with Image.open(tmp_path / "s" / "page-0.png") as image:
-        assert image.size == (200, 200)
-    with Image.open(tmp_path / "a" / "page-0.png") as image:
-        assert image.size == (300, 300)
+    with Image.open(standard.calls[0][0][0]) as image:
+        assert image.size == (144, 144)
+    with Image.open(advanced.calls[0][0][0]) as image:
+        assert image.size == (216, 216)
     assert len(standard.calls) == 1 and len(advanced.calls) == 2
-    assert settings.render_dpi == 200 and settings.max_image_side == 2880
+    assert settings.model_dump() == original_settings
     for diagnostics in (result.diagnostics, other.diagnostics):
         calls = [d for d in diagnostics if "call_number" in d]
         assert len(calls) in (1, 2)
@@ -446,26 +457,14 @@ async def test_standard_recognizes_only_risky_formula(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_standard_three_page_tables_stop_at_adjacent_pair(tmp_path: Path) -> None:
+async def test_standard_retains_fragment_after_model_rejects_continuation(tmp_path: Path) -> None:
     path = tmp_path / "three.tiff"
-    frame = Image.new("RGB", (100, 100), "black")
-    frame.save(path, save_all=True, append_images=[frame, frame])
+    write_table_pages(path, 3)
 
     def table(value: str) -> str:
         return f"<table><tr><td>{value}</td></tr></table>"
 
-    replies = []
-    for value in "ABC":
-        replies.extend(
-            [
-                assessment(tables=True),
-                json.dumps(
-                    [{"bbox": [0, 0, 1000, 1000], "category": "table", "content": table(value)}]
-                ),
-            ]
-        )
     merged = "<table><tr><td>A</td></tr><tr><td>B</td></tr></table>"
-    replies.append(json.dumps([{"source_pages": [1, 2], "html": merged}]))
     runtime = TableRuntime(
         [
             json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "table", "content": table(x)}])
@@ -587,11 +586,6 @@ def test_layout_and_complete_record_salvage() -> None:
         _structured('[{"bbox":[900,0,100,1000],"category":"text","content":"x"}]')
 
 
-def test_markdown_tail_cleanup_is_bounded() -> None:
-    assert _clean_markdown("text " * 2) == "text text"
-    assert len(_clean_markdown("intro " + "x" * 8000)) < 100
-
-
 class ParallelRuntime:
     def __init__(self) -> None:
         self.active = 0
@@ -611,7 +605,7 @@ class ParallelRuntime:
         self.peak = max(self.peak, self.active)
         await asyncio.sleep(0.01)
         self.active -= 1
-        if "without transcription" in prompt or '"category": "string"}' in prompt:
+        if prompt == prompt_for("document_layout"):
             return json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "text"}])
         return json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "text", "content": "visible"}])
 
@@ -632,7 +626,7 @@ async def test_parallel_pages_keep_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_structured_failure_keeps_markdown_and_page_image(tmp_path: Path) -> None:
+async def test_structured_failure_retains_readable_markdown(tmp_path: Path) -> None:
     path = tmp_path / "page.png"
     Image.new("RGB", (30, 30), "black").save(path)
 
@@ -645,13 +639,9 @@ async def test_structured_failure_keeps_markdown_and_page_image(tmp_path: Path) 
             max_tokens: int | None = None,
             response_schema: Payload | None = None,
         ) -> str:
-            if '"category": "string"}' in prompt:
+            if prompt == prompt_for("document_layout"):
                 return '[{"bbox":[0,0,1000,1000],"category":"text"}]'
-            if (
-                "continuous" in prompt.lower()
-                or "markdown" in prompt.lower()
-                and "schema:" not in prompt
-            ):
+            if prompt == prompt_for("document_markdown"):
                 return "readable text"
             return "broken"
 
@@ -681,14 +671,20 @@ def test_partial_table_requires_incomplete_response_and_complete_cell() -> None:
         _structured(Limited(json.dumps([record])))
 
 
-def test_official_tail_cleanup_preserves_short_repetition() -> None:
-    from mineru_like.pipeline import _clean_markdown
-
-    # The supplied helper intentionally cleans even legitimate long repetition;
-    # callers must retain the original and identify the transformation.
-    repeated = "lead " + "hello " * 1500
-    assert _clean_markdown(repeated) == "lead hello"
-    assert _clean_markdown("hello " * 100) == ("hello " * 100).strip()
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        pytest.param("text " * 2, "text text", id="short-pair"),
+        pytest.param("hello " * 100, ("hello " * 100).strip(), id="short-run"),
+        pytest.param("intro " + "x" * 8000, "intro x", id="long-single-character"),
+        pytest.param("lead " + "hello " * 1500, "lead hello", id="long-word"),
+    ],
+)
+def test_official_tail_cleanup_preserves_short_runs_and_bounds_long_runs(
+    source: str, expected: str
+) -> None:
+    # Official cleanup can collapse legitimate long repetition; raw evidence must survive upstream.
+    assert _clean_markdown(source) == expected
 
 
 @pytest.mark.asyncio
@@ -711,7 +707,7 @@ async def test_limited_table_keeps_original_fragment_without_page_image(tmp_path
             max_tokens: int | None = None,
             response_schema: Payload | None = None,
         ) -> str:
-            if '"category": "string"}' in prompt:
+            if prompt == prompt_for("document_layout"):
                 return '[{"bbox":[0,0,1000,1000],"category":"table"}]'
             response = Limited(
                 json.dumps([{"bbox": [0, 0, 1000, 1000], "category": "table", "content": fragment}])
@@ -728,12 +724,26 @@ async def test_limited_table_keeps_original_fragment_without_page_image(tmp_path
     result.validate()
 
 
-def test_markdown_fallback_replaces_unavailable_local_image_reference() -> None:
+@pytest.mark.parametrize("markup", ["![plot]({})", '<img src="{}">'], ids=["markdown", "html"])
+@pytest.mark.parametrize("known", [False, True], ids=["missing", "registered"])
+def test_fallback_image_references_preserve_only_registered_assets(
+    markup: str, known: bool
+) -> None:
     from mineru_like.pipeline import _fallback_image_references
 
-    value = _fallback_image_references('![plot](images/bbox_0_0_1_1.jpg) <img src="images/x.png">')
-    assert value.count("Unclear image") == 2
-    assert "images/bbox_" not in value and "images/x.png" not in value
+    destination = "images/plot.png"
+    original = markup.format(destination)
+    missing = '<img src="missing.png">' if original.startswith("!") else "![missing](missing.png)"
+    rendered = _fallback_image_references(
+        original + " " + missing, {destination} if known else set()
+    )
+    assert "missing.png" not in rendered
+    if known:
+        assert original in rendered
+        assert rendered.count("Unclear image") == 1
+    else:
+        assert destination not in rendered
+        assert rendered.count("Unclear image") == 2
 
 
 def test_length_response_retains_valid_record_and_rejected_provenance() -> None:
@@ -784,11 +794,11 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
             max_tokens: int | None = None,
             response_schema: Payload | None = None,
         ) -> str:
-            if '"category": "string"}' in prompt:
+            if prompt == prompt_for("document_layout"):
                 return json.dumps([{"bbox": [100, 100, 500, 500], "category": "table"}])
-            if Path(images[0]).name.startswith("formula-"):
-                with Image.open(images[0]) as crop:
-                    assert crop.width < 100 and crop.height < 100
+            with Image.open(images[0]) as submitted:
+                is_region = submitted.width < 100 and submitted.height < 100
+            if is_region:
                 return json.dumps(
                     [{"bbox": [0, 0, 1000, 1000], "category": "table", "content": fragment}]
                 )
@@ -824,7 +834,9 @@ async def test_targeted_table_recovery_uses_layout_crop_and_replaces_bad_fragmen
 @pytest.mark.asyncio
 async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_path: Path) -> None:
     path = tmp_path / "math.png"
-    Image.new("RGB", (100, 100), "black").save(path)
+    source = Image.new("RGB", (100, 100), "blue")
+    ImageDraw.Draw(source).rectangle((0, 50, 99, 99), fill="red")
+    source.save(path)
 
     class Model:
         def __init__(self) -> None:
@@ -839,19 +851,19 @@ async def test_formula_recognition_runs_concurrently_and_keeps_block_order(tmp_p
             max_tokens: int | None = None,
             response_schema: Payload | None = None,
         ) -> str:
-            if '"category": "string"}' in prompt:
+            if prompt == prompt_for("document_layout"):
                 return assessment(math=True)[7:]
-            if (
-                prompt
-                == (
-                    Path(__file__).parents[1] / "src/mineru_like/prompts/formula_recognition.txt"
-                ).read_text()
-            ):
+            if prompt == prompt_for("formula_recognition"):
                 self.started += 1
                 if self.started == 2:
                     self.both.set()
                 await asyncio.wait_for(self.both.wait(), timeout=2)
-                return "$$x+1$$" if "-0-view" in Path(images[0]).name else "$$y+2$$"
+                with Image.open(images[0]) as region:
+                    center = cast(
+                        tuple[int, int, int],
+                        region.convert("RGB").getpixel((region.width // 2, region.height // 2)),
+                    )
+                return "$$x+1$$" if center[2] > center[0] else "$$y+2$$"
             return json.dumps(
                 [
                     {"bbox": [0, 0, 1000, 500], "category": "display_formula", "content": "x+{"},
@@ -963,7 +975,9 @@ def test_invalid_bbox_is_localized_with_diagnostic(tmp_path: Path, bounds: str) 
         assets,
         diagnostics=diagnostics,
     )
-    assert rendered == "Before [Unclear image; pg 1; zoom if possible.] after"
+    assert rendered.startswith("Before ") and rendered.endswith(" after")
+    assert "Unclear image" in rendered and "pg 1" in rendered and "zoom" in rendered
+    assert "bbox_" not in rendered
     assert not assets and diagnostics[0]["status"] == "unresolved"
     assert diagnostics[0]["reference"] in text
 
