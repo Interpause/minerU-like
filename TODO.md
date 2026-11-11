@@ -36,9 +36,7 @@ Fidelity and reliability come first. The following tracks are distinct; their or
 
 Concrete gaps and policy audits:
 
-- [ ] Align generated-caption failure handling with the agreed best-effort direction when faithful source graphics are available. PDF/image parsing currently retains figures after malformed or unmatched caption output, while equivalent native-caption failures can abort. Keep required processing failures distinct; do not add retries merely to hide malformed responses.
-- [ ] Audit broad native-conversion/SVG exception handling and optional asset fallback boundaries. Required rendering/materialization/inference/publication failures must not be disguised as successful extraction; distinguish a failed optional improvement from loss of required evidence.
-- [ ] Review stage-specific output limits against official task contracts and truncation evidence. Ordinary extraction/recovery currently uses `min(runtime.max_tokens, 16384)`; cross-page reconstruction uses the configured limit. Document the current behavior, then decide whether the cap should change; this is not authorization to remove it.
+- [ ] Continue auditing optional asset fallback boundaries; native conversion and required embedded-SVG preparation now distinguish recognized content failures from infrastructure faults. Required rendering/materialization/inference/publication failures must not be disguised as successful extraction; distinguish a failed optional improvement from loss of required evidence.
 - [ ] Preserve HTML/EPUB inline SVG reliably through conversion, including source-to-output association. It is currently rejected conservatively; extracted standalone SVG assets already work within their supported subset.
 - [ ] Add visual orientation detection and camera skew/perspective correction when EXIF/PDF rotation metadata is insufficient. Preserve originals and reversible region coordinates.
 - [ ] Expand source-feature inventory for complex layouts, shapes, math, and embedded content outside the currently covered Office structures, including OpenDocument and legacy binary formats.

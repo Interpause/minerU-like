@@ -4,7 +4,7 @@ This is the maintained reference for source semantics, reader annotations and de
 
 ## Source baseline and evidence
 
-The following baseline records source revisions inspected for the 0.4.0 rendering work; these observations are not claims about later upstream releases. The documentation refactor does not refresh those upstream inspections.
+The following baseline records source revisions inspected for the 0.4.0 rendering work; these observations are not claims about later upstream releases. Later focused audits are recorded separately below.
 
 | Source | Revision and relevant paths |
 | --- | --- |
@@ -24,6 +24,12 @@ Observed contract decisions:
 - Ovis has no dedicated list category. Keep supplied text Markdown intact. Native unmarked unordered items may become Markdown bullets; existing decimal, alphabetic and Roman markers, nesting, continuation lines and indices must survive. Ellipses and `\cdots` alone are not list evidence.
 - Generated Mermaid is interpretation, not source transcription. Omit it from the reader transcript and retain the raw caption response in diagnostics. Legitimate source Mermaid and code remain source content.
 - Renaming crops is not inherently a link blocker: ordinary Markdown destinations participate in the server and plugin path rewriting. Source-image cleanup later in the plugin can still remove their targets without retargeting the links.
+
+## Output-budget contract
+
+For 0.4.1, the pinned Ovis README and `document_crosspage.py`, all bundled task prompts, both demo wrappers and the [technical report](https://arxiv.org/abs/2610.33066) were compared for output-budget constraints. The README and cross-page example use `SamplingParams(max_tokens=16384, temperature=0.0)`. The [hugging-apps wrapper at 971a581](https://huggingface.co/spaces/hugging-apps/ovisocr3/blob/971a58106d546add1a230de2dd9936648c600f2b/app.py) explicitly clamps UI requests to 16,384. The [ATH-MaaS wrapper at 72851f1](https://huggingface.co/spaces/ATH-MaaS/OvisOCR3/blob/72851f1a4d49e480527a2dc05c920356c9e3d581/app.py) offers a slider with the same upper bound and forwards the chosen budget through its pipeline/inference functions.
+
+These are example/wrapper policies. No mandatory 16,384-token ceiling was found in the task contracts or report. The application therefore uses the configured output budget consistently across tasks, preserving prompts, response structures and greedy sampling. Existing context validation still applies. Automated request-forwarding checks establish budget handling, not model quality at longer output lengths; live long-response behavior remains unverified.
 
 ## Reader presentation
 

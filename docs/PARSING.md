@@ -35,11 +35,11 @@ Failure handling depends on the stage; successful publication is not a guarantee
 
 Current exceptions and limits:
 
-- **Generated captions:** PDF/image parsing can retain a source figure when a caption response is malformed or cannot be matched, recording diagnostics. Native caption enrichment can instead abort on missing/multiple candidates or a missing `<caption>`. A source image may already exist when this happens; these branches do not establish how often it occurs or that an earlier step failed. The agreed [follow-up direction](../TODO.md#1-fidelity-and-reliability) is consistent best-effort generated descriptions when faithful source graphics remain available; it is not yet implemented for all native paths. Backend inference failures are distinct from malformed caption content.
+- **Generated captions:** PDF/image and native paths retain available source figures when generated caption content is malformed, missing or cannot be matched. Native failures add one unresolved notice in diagnostics, retaining raw model evidence and the source asset. Backend inference failures and required caption-asset materialization failures propagate; optional description recovery does not hide them or add inference retries.
 - **Optional asset improvements:** compression and source-SVG recovery can retain the original asset with diagnostics when a candidate is unsuitable or an optional improvement fails. Their catches include some filesystem/rendering exceptions; these do not establish a blanket guarantee that every infrastructure error aborts.
-- **Native conversion fallback:** conversion failures can trigger LibreOffice visual recovery, with source/provenance safeguards and spreadsheet limitations. The current broad native-conversion exception catch needs review to distinguish recoverable conversion failures from infrastructure faults.
+- **Native conversion fallback:** recognized malformed-container/XML and DocVortex parse failures, or reported broken pages, can trigger LibreOffice visual recovery, with source/provenance safeguards and spreadsheet limitations. Successful recovery records the original exception type/message or converter diagnostics. Encryption, resource limits, filesystem failures and unexpected exceptions propagate. Only explicitly recognized parse classes qualify; a generic `ValueError` is insufficient. Required embedded-SVG preparation translates invalid/unsafe source syntax into an unsupported-content error while rendering and filesystem failures propagate.
 
-Do not infer general backend or filesystem fault tolerance from these optional paths. The roadmap records the error-boundary audit separately from observed behavior.
+Do not infer general backend or filesystem fault tolerance from these optional paths. Further auditing of optional asset improvements remains separate work.
 
 ### Headless LibreOffice
 

@@ -2,14 +2,21 @@
 
 ## Unreleased
 
+## 0.4.1 — 2026-11-11
+
+- Honor `runtime.max_tokens` consistently across ordinary tasks and cross-page reconstruction, removing the hidden 16,384-token stage ceiling. Keep context-capacity checks, official prompts and sampling unchanged. The upstream audit found example/demo budgets, not a mandatory task-contract ceiling; longer live generations remain unverified.
+- Retain native source visuals when optional generated captions are malformed, missing or ambiguous, with raw evidence and unresolved diagnostics. Distinguish model-output validation errors from backend failures; required inference/materialization failures still propagate.
+- Restrict native conversion fallback to recognized parse/container/XML failures and reported broken pages, preserving the recovery cause. Propagate encryption, resource-limit, filesystem and unexpected failures. Separate required embedded-SVG syntax validation from rendering and file operations.
+- Validation: **310 passed, 12 skipped**, with two existing Pillow deprecation warnings. Ruff lint/format and advisory ty pass. The strict integration runner stops at missing TypeScript/fflate prerequisites; plugin lifecycle, real cwebp, host Flatpak, live inference, CUDA/corpus and actual Zotero checks remain unverified. Cancellation lookup and backend log limits remain deferred.
+
 - Add a root feature map linked from README, with implemented capabilities, consequential limits and links to maintained guides. Include it in source distributions.
 - Separate TODO's validation queue, concrete gaps, agreed engineering directions, conditional extensions and accepted boundaries. Keep fidelity/reliability first; distinguish Advanced quality/performance from shared pipeline efficiency, native Advanced support and optional lower-effort tiers. Carry existing pending work forward and retain completed/historical evidence in the changelog.
-- Document current caption/fallback differences and stage-specific output ceilings without changing parsing behavior. Record best-effort native descriptions, error-boundary review and output-budget auditing as follow-ups, not completed fixes. Qualify unexecuted plugin lifecycle coverage, preserve pinned historical source observations, and correct UUID/verification comments and routine build guidance.
+- Reconcile parsing policies and configuration guidance with the implemented caption/fallback boundaries and output budgets. Qualify unexecuted plugin lifecycle coverage, preserve pinned historical source observations, and correct UUID/verification comments and routine build guidance.
 
 - Consolidate duplicate fallback-image, three-page reconstruction, repetition-cleanup and small-mark fidelity scenarios without dropping their distinct failure modes. Retain separate cancellation/ownership, bbox, math, source-isolation, native-rejection and legacy-override checks.
 - Use representative Ovis category inputs and current typed generated-caption ZIP fixtures. Centralize exact annotation examples; allow additive health fields and unordered schema requirements. Route fake model replies by official task prompts and generated image content instead of temporary filenames, while retaining deliberate runtime/model contracts.
 - Reduce the unchanged-plugin matrix from 15 to 7 combinations, retaining all tier/OCR choices and PNG/WebP/SVG coverage. Select detailed crop lifecycle checks for the three Standard format cases.
-- Inventory changes from 305 cases in 219 functions to 302 cases in 215 functions: eight plugin cross-combinations and one repeated table scenario are removed, while existing fallback, cleanup and fidelity examples become separately reported parameter cases. The normal suite passes with **290 passed, 12 skipped** and two existing Pillow deprecation warnings; Ruff lint/format, advisory ty and JavaScript syntax checks pass. Plugin execution, real cwebp, host Flatpak and live backend checks remain unverified because their integration prerequisites/opt-ins are absent. Production code, dependency versions and release tags are unchanged.
+- Inventory changes from 305 cases in 219 functions to 302 cases in 215 functions: eight plugin cross-combinations and one repeated table scenario are removed, while existing fallback, cleanup and fidelity examples become separately reported parameter cases. The normal suite passes with **290 passed, 12 skipped** and two existing Pillow deprecation warnings; Ruff lint/format, advisory ty and JavaScript syntax checks pass. Plugin execution, real cwebp, host Flatpak and live backend checks remain unverified because their integration prerequisites/opt-ins are absent. That test-consolidation milestone changed no production behavior or dependencies.
 
 ## 0.4.0 — 2026-11-11
 

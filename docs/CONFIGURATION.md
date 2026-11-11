@@ -61,9 +61,9 @@ The default managed profile uses **Q8_0 model weights, a BF16 projector, BF16 KV
 
 ### Effective output limits
 
-`runtime.max_tokens` is the configured generation ceiling, not a promise that every pipeline stage requests that many tokens. The ordinary task adapter currently requests `min(runtime.max_tokens, 16384)` for structured/layout extraction, captions, separate Markdown readings and localized recovery. Cross-page reconstruction instead passes the configured `runtime.max_tokens` directly. Increasing the setting above 16384 therefore does not increase the requested output for ordinary tasks. These application-stage limits also apply when the inference endpoint is external.
+`runtime.max_tokens` is the requested generation ceiling for ordinary extraction, layout, captions, separate Markdown readings, localized recovery and cross-page reconstruction. Managed and external inference receive the configured value without an additional application-stage cap. It is a maximum, not a target output length.
 
-The runtime rejects a requested output limit that reaches/exceeds `context_size`, and managed preflight additionally accounts for prompt/image tokens when their geometry can be estimated. The stage-specific cap is current behavior; [the fidelity/configuration audit](../TODO.md#1-fidelity-and-reliability) will review it against task contracts and truncation evidence before deciding whether it should change.
+The runtime rejects a requested output limit that reaches/exceeds `context_size`, and managed preflight additionally accounts for prompt/image tokens when their geometry can be estimated. Raising the budget reserves more context and can make a previously fitting request fail preflight; adjust context and input settings together. See the [task-contract audit](CONTENT_RENDERING.md#output-budget-contract) for the upstream examples and wrapper policies.
 
 ### Slots, batching and deadlines
 
