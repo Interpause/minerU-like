@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replace exhaustive running-furniture page lists with local presentation: omit confirmed redundant counters, retain differing printed labels on their page, and repeat genuine furniture only when a new consecutive run begins. Restore misclassified visual headings using title geometry supported by three other physical pages, retaining original classifications in metadata.
+- Use `[view_src_img]` and a shared caption-reliability cue for photos and diagrams. Preserve ordinary source-image links for Markdown/HTML images inside fallback text as well as dedicated figures and tables, so plugin embed stripping does not erase their only readable reference.
+- Avoid false structured-page rejection from uniform dark edge banners while preserving contrast from white text and coverage of solid body graphics. Log coverage measurements and distinguish missing, ambiguous, low-overlap and empty generated-caption matches. Official prompts, generation policies and semantic graphic-replacement checks remain unchanged.
+
 ## 0.4.1 — 2026-11-11
 
 - Honor `runtime.max_tokens` consistently across ordinary tasks and cross-page reconstruction, removing the hidden 16,384-token stage ceiling. Keep context-capacity checks, official prompts and sampling unchanged. The upstream audit found example/demo budgets, not a mandatory task-contract ceiling; longer live generations remain unverified.

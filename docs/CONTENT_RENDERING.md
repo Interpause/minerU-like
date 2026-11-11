@@ -36,16 +36,17 @@ These are example/wrapper policies. No mandatory 16,384-token ceiling was found 
 `presentation.py` owns complete annotations, including brackets, separators, asset link syntax and cues. Callers provide semantic intent and unlabelled content. Typical output:
 
 ```markdown
-[Running header; pg 2–8: Lecture 5]
-[Running footer; pg 3–10: Author]
+[Running header: Lecture 5]
+[Running footer: Author]
+[Printed page iv]
 [Caption] Original caption…
 [Footnote] Original note…
 [Figure note] Original annotation…
-[AI img desc] [crop](images/final.webp) Full official caption. Inspect exact labels and relationships if needed.
+[AI img desc] [view_src_img](images/final.webp) Full official caption. View source image if helpful; Caption may be partial/unreliable.
 [Unclear formula; pg 7, approx. lower-right; zoom if possible.]
 ```
 
-Short furniture and unreadable notices stay inside brackets. Source captions and longer notes follow a role marker. Known photographs use a conditional appearance/identity cue; other graphics use the exact-label/relationship cue. Cues require no inference call and do not declare visuals unimportant. Captioning-disabled graphics still have an `[Image]` crop link as well as the normal asset embed.
+Short furniture and unreadable notices stay inside brackets. Source captions and longer notes follow a role marker. Photographs and diagrams use the same inspection cue, acknowledging that generated descriptions may be incomplete or wrong. Cues require no inference call. Captioning-disabled graphics still have an `[Image]` source-image link as well as the normal asset embed. The link identifies the delivered source graphic; it does not promise that degraded original pixels will be clearer or that a consumer's tools permit direct access.
 
 Titles retain explicit levels or leading Markdown heading levels. Text, content and vertical text retain source Markdown and order. Known code gets an untyped fence if needed; algorithms retain their existing representation. Abstracts, references and asides receive compact labels unless a source heading already makes their role apparent. Formula delimiters and printed numbers remain distinct source information; no equation association or tag is invented. Unclear formulas are plain text without guesses or exact coordinates. Partial readings and rejected candidates remain in metadata/diagnostics.
 
@@ -55,18 +56,20 @@ Accepted reconstructed tables use typed table-body projections: render the merge
 
 ## Running furniture
 
-Collapse is a reader-only projection; every original block and printed counter remains in structured output.
+Collapse is a reader-only projection; original text and printed counters remain in structured output. Group membership is recorded in diagnostics rather than exhaustive reader-facing coverage lists.
+
+Before furniture projection, a visual header can be restored to a paragraph title when it matches stable top-band title geometry from at least three other physical pages. Left/top position and height must agree; width may vary with title length. Missing geometry, native/logical pages, list headings and competing top headings prevent promotion. Each restored title remains on its own page, including consecutive repetitions. Original type/category remain in metadata and corrections have diagnostic provenance. This geometry heuristic does not establish general model classification accuracy.
 
 - Explicit headers/footers must be wholly in the matching outer 20% of a physical page. Other candidates are only text/content or recognized standalone counters wholly in the outer 12%, no taller than 4% of the page.
 - Exclude titles, captions, footnotes, references, algorithms, tables, formulas and graphics. Require matching edge and literal text or verified counter template, with at most 5% horizontal and 2.5% vertical centre drift.
-- Require three occurrences for explicit furniture or verified counters, five for wholly inferred text. Odd/even patterns and gaps use exact compact page coverage; missing pages are not implied.
+- Require three occurrences for explicit furniture or verified counters, five for wholly inferred text. Retain genuine furniture once per consecutive run; a gap starts a new run. No global page list is inserted into reader Markdown.
 - Counter normalization recognizes explicit Page/p./pg fields, standalone counters and credible N/total forms. Arabic and canonical Roman labels must progress with physical pages under a fixed offset. Totals and surrounding literals remain stable. Resets form separate groups; dates, lecture/chapter numbers, decimals and ambiguous suffixes are not wildcarded.
-- Keep the first occurrence with its exact physical coverage. Redundant standalone Arabic counters matching the page comments may disappear from the reader transcript. Other counters retain a compact physical-to-printed mapping, including Roman front matter.
+- Normalize counter spacing, including `N/total` and `N / total`. Confirmed pure Arabic counters matching physical page comments disappear from the reader transcript. Differing printed numbering appears locally as `[Printed page 9]` or `[Printed page iv]`. Compound numbered furniture retains its source wording locally; arbitrary text is not discarded to extract a page label.
 - Unique/uncertain explicit furniture is labelled individually. Native logical units do not undergo inferred collapse without reliable physical geometry.
 
 ## Image references and failure boundaries
 
-Generated descriptions use ordinary links computed from the current registered asset when rendered. Embedded table graphics retain valid HTML images and receive ordinary links outside the HTML in image/cell encounter order. Markdown inside table cells and HTML anchor rewriting are not assumed.
+Generated descriptions use ordinary links computed from the current registered asset when rendered. Images embedded inside text, fallback Markdown and tables also receive ordinary source-image links after their block, in encounter order. Existing ordinary links to the same asset prevent redundant additions within that block. Fenced/inline code is excluded. This preserves discoverability when the unchanged plugin strips image embeds. Original model-facing content stays unchanged; Markdown inside table cells and HTML anchor rewriting are not assumed.
 
 Discovery, strict validation and rewriting cover Markdown image embeds, ordinary local image-asset links and HTML images. Ordinary document links and external URLs are excluded. Compression, SVG replacement, native namespacing and final content-hash naming update ordered annotations and table-body projections as well as ordinary block content.
 
@@ -85,7 +88,7 @@ The expanded integration harness is implemented to exercise the actual unchanged
 5. Image-embed stripping removes embeds while ordinary crop links remain. Targets resolve while source images remain cached.
 6. A matching, complete PDF figure-cache manifest enables source-image pruning. The integration asserts that links can remain in `full.md` while their original targets disappear, and that no automatic link retargeting occurs. An incomplete cache must not trigger this pruning.
 
-The viewing agent must use its own visual tools when the plugin has removed the source crop; actual viewing-agent access still needs deployment validation. This accepted limitation does not justify modifying the plugin or adding a lifecycle warning to every cue. The controlled harness does not exercise Zotero GUI rendering or actual PDF figure extraction quality. Run the plugin integration with the prerequisites in [TESTING.md](TESTING.md); missing prerequisites must be reported as unverified, not passed.
+Focused checks of unchanged normalization, chunk merging and embed stripping confirm that PNG/WebP/SVG source-image links from dedicated figures and fallback text survive those operations and resolve while assets remain. They supply decoded ZIP fixtures and do not establish HTTP/ZIP or pruning behavior. The full controlled harness and actual viewing-agent access still need execution with their prerequisites. The controlled harness does not exercise Zotero GUI rendering or actual PDF figure extraction quality. Run the plugin integration with the prerequisites in [TESTING.md](TESTING.md); missing prerequisites must be reported as unverified, not passed.
 
 ## Validation scope
 
