@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-11-13
+
 - Raise built-in source-rendering defaults to match the example configuration: Standard uses 300 DPI with a 4096-pixel maximum side; Advanced uses 600 DPI with an 8192-pixel maximum side. Existing explicit settings still override defaults; model image-token budgets are unchanged. Higher-resolution preparation costs and live quality/VRAM effects remain unmeasured.
 - Protect leading ATX and Setext Markdown headings from running-furniture collapse and role wrapping without inferring hierarchy for plain text.
 - Filter tiny uncaptioned generic visual images before caption inference using the documented [size-only policy](docs/CONTENT_RENDERING.md#tiny-generic-images). Preserve source-caption candidates and shared assets; retain raw diagnostics. The accepted policy can also remove meaningful tiny generic images.
