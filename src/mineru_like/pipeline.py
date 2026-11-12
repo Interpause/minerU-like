@@ -22,6 +22,7 @@ from typing import Any, Literal, TypeVar, cast, overload
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
+from .captions import associate_captions
 from .config import Settings
 from .contracts import Diagnostic, Inference, ModelOutputError, Payload
 from .geometry import ImageGeometry, ovis_size
@@ -1405,22 +1406,7 @@ class Pipeline:
                     metadata={"incomplete": True},
                 )
             )
-        attached: set[int] = set()
-        for n, block in enumerate(blocks):
-            if block.metadata.get("category") != "figure_title":
-                continue
-            adjacent = [
-                (j, blocks[j])
-                for j in (n - 1, n + 1)
-                if 0 <= j < len(blocks) and blocks[j].image_source
-            ]
-            if len(adjacent) == 1:
-                target_index, target = adjacent[0]
-                target.annotations.append(
-                    Annotation("Caption", block.content, before=n < target_index)
-                )
-                attached.add(n)
-        blocks = [block for n, block in enumerate(blocks) if n not in attached]
+        blocks = associate_captions(blocks)
         if self.settings.captioning and any(
             b.image_source and b.metadata.get("category") in IMAGES for b in blocks
         ):

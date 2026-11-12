@@ -311,18 +311,15 @@ class DocumentResult:
                     if block.level is None and heading:
                         item["level"] = len(heading[1])
                     item["content"] = re.sub(r"^#{1,6}\s+", "", item["content"])
-                item["captions"] = [
-                    {"content": c}
-                    for c in [
-                        *block.captions,
-                        *(
-                            visual_description(a.content, block.image_source)
-                            if a.generated
-                            else a.content
-                            for a in block.annotations
-                            if a.role != "Footnote"
-                        ),
-                    ]
+                item["captions"] = [{"content": c} for c in block.captions] + [
+                    {
+                        "content": visual_description(a.content, block.image_source)
+                        if a.generated
+                        else a.content,
+                        **({"before": a.before} if a.role == "Caption" and not a.generated else {}),
+                    }
+                    for a in block.annotations
+                    if a.role != "Footnote"
                 ]
                 item["footnotes"] = [
                     {"content": c}

@@ -463,7 +463,7 @@ async def test_printed_figure_caption_is_associated_with_asset(tmp_path: Path) -
         path, path.name, "auto", "standard", tmp_path / "out"
     )
     assert result.structured()["pages"][0]["blocks"][0]["captions"] == [
-        {"content": "Figure 1: a square"}
+        {"content": "Figure 1: a square", "before": False}
     ]
 
 

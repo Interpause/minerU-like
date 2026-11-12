@@ -143,7 +143,7 @@ def test_ordered_provenance_keeps_evidence_and_full_generated_caption() -> None:
     assert "Caption" not in source and caption not in source
     structured = DocumentResult([Page(0, [block])]).structured()["pages"][0]["blocks"][0]
     assert "annotations" not in structured
-    assert structured["captions"][0] == {"content": "Above"}
+    assert structured["captions"][0] == {"content": "Above", "before": True}
     assert "AI img desc" in structured["captions"][1]["content"]
 
 

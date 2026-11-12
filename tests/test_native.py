@@ -268,7 +268,7 @@ async def test_native_visual_nested_bbox_and_source_annotation_order(
     assert md.index("Above") < md.index("![image]") < md.index("Below")
     assert "bbox_0_0_500" not in md and "Table image 1" in md
     block = result.structured()["pages"][0]["blocks"][0]
-    assert block["captions"] == [{"content": "Above"}] and block["footnotes"] == [
+    assert block["captions"] == [{"content": "Above", "before": True}] and block["footnotes"] == [
         {"content": "Below"}
     ]
 
