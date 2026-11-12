@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.2 — 2026-11-12
+
 - Associate source captions with figures and tables using conservative geometry instead of image adjacency. Preserve full text and above/below placement; retain ambiguous captions as standalone content.
 - Separate Advanced's initial text/formula disagreement from final recovery outcomes in diagnostics. Resolved differences are informational; unresolved corroboration does not establish an incorrect transcription. Preserve raw evidence, inference calls and content-acceptance policy.
 - Validation for caption association and diagnostic outcomes: **360 passed, 12 skipped** in the normal suite; Ruff checks on owned source/tests/scripts and advisory typing pass. Six saved source-caption regions replay to the expected owners without inference. A focused check of the unchanged plugin accepts the additive source-caption `before` field; the full plugin lifecycle, host Zotero and CUDA checks remain unverified.
