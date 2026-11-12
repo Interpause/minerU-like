@@ -69,6 +69,8 @@ Accepted reconstructed tables use typed table-body projections: render the merge
 
 Collapse is a reader-only projection; original text and printed counters remain in structured output. Group membership is recorded in diagnostics rather than exhaustive reader-facing coverage lists.
 
+Leading explicit Markdown headings, including ATX and Setext forms, remain headings even when their model category is header/footer or another labelled role. They bypass furniture collapse and role wrapping; this does not infer hierarchy for plain text.
+
 Before furniture projection, a visual header can be restored to a paragraph title when it matches stable top-band title geometry from at least three other physical pages. Left/top position and height must agree; width may vary with title length. Missing geometry, native/logical pages, list headings and competing top headings prevent promotion. Each restored title remains on its own page, including consecutive repetitions. Original type/category remain in metadata and corrections have diagnostic provenance. This geometry heuristic does not establish general model classification accuracy.
 
 - Explicit headers/footers must be wholly in the matching outer 20% of a physical page. Other candidates are only text/content or recognized standalone counters wholly in the outer 12%, no taller than 4% of the page.
@@ -77,6 +79,14 @@ Before furniture projection, a visual header can be restored to a paragraph titl
 - Counter normalization recognizes explicit Page/p./pg fields, standalone counters and credible N/total forms. Arabic and canonical Roman labels must progress with physical pages under a fixed offset. Totals and surrounding literals remain stable. Resets form separate groups; dates, lecture/chapter numbers, decimals and ambiguous suffixes are not wildcarded.
 - Normalize counter spacing, including `N/total` and `N / total`. Confirmed pure Arabic counters matching physical page comments disappear from the reader transcript. Differing printed numbering appears locally as `[Printed page 9]` or `[Printed page iv]`. Compound numbered furniture retains its source wording locally; arbitrary text is not discarded to extract a page label.
 - Unique/uncertain explicit furniture is labelled individually. Native logical units do not undergo inferred collapse without reliable physical geometry.
+
+## Tiny generic images
+
+Physical visual processing removes an uncaptioned generic `image` block only when its valid normalized box meets all three inclusive limits: width at most 4% of the page, height at most 7%, and area at most 0.2%. This is a size policy, not a decorative-image classifier: meaningful tiny generic images can also be removed. There is no description-keyword gate.
+
+Charts, tables, formulas, seals and header/footer images retain their distinct categories. Native logical images, missing/invalid geometry, source text, captions, notes and nongenerated annotations protect a block. A standalone source caption also protects every plausible owner under the existing association geometry, even when ownership is ambiguous.
+
+Filtering precedes generated caption inference. A page with no remaining eligible visual skips that request; mixed pages use the usual request. Filtered blocks, their generated descriptions and dedicated links disappear from both delivered representations. Their assets are removed only if no remaining block, annotation or table projection references them. Raw model responses remain in diagnostics, alongside `tiny_image_filter` decisions. This does not change delivery compression or the shared caption-reliability cue.
 
 ## Image references and failure boundaries
 

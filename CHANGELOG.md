@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Protect leading ATX and Setext Markdown headings from running-furniture collapse and role wrapping without inferring hierarchy for plain text.
+- Filter tiny uncaptioned generic visual images before caption inference using the documented [size-only policy](docs/CONTENT_RENDERING.md#tiny-generic-images). Preserve source-caption candidates and shared assets; retain raw diagnostics. The accepted policy can also remove meaningful tiny generic images.
+- Add a [selected-job evidence exporter](docs/OPERATIONS.md#export-selected-completed-jobs) with original source/result bytes, matching rotated logs, hashes, allowlisted recorded settings and maximum-preset `.tar.xz` compression. Existing retention and service/plugin interfaces are unchanged.
+- Record model plus layout/geometry evaluation as a core future quality/performance strategy. Bounded offline source-quality research supports no production readability threshold or change to compression/caption cues.
+- Validation: **443 passed, 12 skipped** in the normal suite, with two existing Pillow warnings. Ruff lint/format and advisory typing pass; exporter tests also pass after tightening archive-member assertions. Generated fixtures establish filtering, heading preservation and exporter behavior, not corpus recognition quality. Live inference, CUDA, host integrations and the full plugin lifecycle were not rerun.
+
 ## 0.4.2 — 2026-11-12
 
 - Associate source captions with figures and tables using conservative geometry instead of image adjacency. Preserve full text and above/below placement; retain ambiguous captions as standalone content.

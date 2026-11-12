@@ -48,6 +48,22 @@ Failed jobs also retain `job-context.json` and available raw diagnostics beneath
 
 The persistent logs omit normal request bodies, authorization headers, prompts and raw transcription candidates. Configured application/inference API keys are redacted, including in tracebacks. Logs still contain document filenames, hashes, local evidence paths and exception/backend details; inspect them before sharing. Raw candidates and images remain in the existing per-job diagnostic artifacts rather than being copied wholesale into the server log. HTTP errors before valid upload metadata is available may only identify the request route/status.
 
+### Export selected completed jobs
+
+From a source checkout, select completed job IDs from the logs or job API and an existing destination directory:
+
+```sh
+uv run --locked python scripts/export_triage_bundle.py \
+  --data-dir data --job-id JOB_ID --job-id ANOTHER_JOB_ID \
+  --output triage.tar.xz
+```
+
+The helper reads existing SQLite metadata without initializing the service. It copies original result ZIPs (including their diagnostics), available uploaded source bytes, and matching job records from both logs and their five rotated backups. A manifest records identities, source/result SHA-256 hashes and an allowlisted snapshot of recorded operational settings; paths, endpoints, API keys and arbitrary configuration strings are excluded. Historical settings unavailable in the database remain absent rather than being inferred from today's configuration.
+
+Missing retained source files or log files are listed as optional omissions. Invalid/incomplete jobs or missing result ZIPs fail the export. Records already rotated away cannot be recovered. Selected log records and result ZIP contents are preserved as recorded, so the bundle still contains document data and local evidence details; inspect it before sharing. Export does not extend retention or provide a transactional snapshot across the database, logs and files. A concurrent cleanup can make export fail; preserve evidence before retention expires.
+
+Archives use LZMA preset 9 with extreme compression, which can use substantial CPU and memory. Publication refuses to overwrite an existing file. This is a local research helper; it changes no plugin or HTTP interface.
+
 With the local configuration prepared, probe LibreOffice and cwebp availability:
 
 ```sh
