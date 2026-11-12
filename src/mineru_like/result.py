@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from .contracts import Diagnostic, Payload
-from .presentation import Annotation, annotation, visual_description
+from .presentation import Annotation, annotation, starts_with_heading, visual_description
 
 
 def transform_markup(text: str, transform: Callable[[str], str]) -> str:
@@ -156,7 +156,7 @@ class Block:
                 }
                 parts.append(
                     content
-                    if content.lstrip().startswith("#")
+                    if content.lstrip().startswith("#") or starts_with_heading(content)
                     else annotation(roles[self.type], content)
                 )
             elif self.type == "code" and not content.lstrip().startswith(("```", "~~~")):

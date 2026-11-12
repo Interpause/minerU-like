@@ -210,7 +210,19 @@ def test_exact_and_inferred_furniture_threshold_and_structured_retention() -> No
 
 
 @pytest.mark.parametrize("role", ["header", "footer", "text", "content"])
-@pytest.mark.parametrize("heading", ["# Heading", "###### Heading", "   ## Heading", "##"])
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "# Heading",
+        "###### Heading",
+        "   ## Heading",
+        "##",
+        "Heading\n===",
+        "Heading\n---",
+        "Heading\ncontinues\n===",
+        "\n## Heading",
+    ],
+)
 def test_explicit_markdown_heading_is_never_furniture(role: str, heading: str) -> None:
     box = (0.1, 0.96, 0.9, 0.99) if role == "footer" else (0.1, 0.01, 0.9, 0.035)
     pages = _pages([heading] * 5, role, box=box)
@@ -224,7 +236,16 @@ def test_explicit_markdown_heading_is_never_furniture(role: str, heading: str) -
 
 
 @pytest.mark.parametrize(
-    "text", ["#hashtag", "####### Literal", "Title # word", "```\n## code\n```"]
+    "text",
+    [
+        "#hashtag",
+        "####### Literal",
+        "Title # word",
+        "```\n## code\n```",
+        "```\nHeading\n===\n```",
+        "Heading\n\n---",
+        "- Item\n---",
+    ],
 )
 def test_literal_hashes_do_not_disable_furniture_collapse(text: str) -> None:
     assert DocumentResult(_pages([text] * 3)).markdown().count(text) == 1

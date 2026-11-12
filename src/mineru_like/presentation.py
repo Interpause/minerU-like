@@ -12,6 +12,25 @@ class Annotation:
     generated: bool = False
 
 
+def starts_with_heading(text: str) -> bool:
+    """Recognize a leading Markdown heading without interpreting its source role."""
+    lines = text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if not lines:
+        return False
+    if re.match(r"^ {0,3}#{1,6}(?:[ \t]+|$)", lines[0]):
+        return True
+    for index, line in enumerate(lines):
+        if index and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", line):
+            return True
+        if not re.match(r"^ {0,3}\S", line) or re.match(
+            r"^ {0,3}(?:`{3,}|~{3,}|[-+*](?:[ \t]|$)|[0-9]+[.)][ \t]|>)", line
+        ):
+            return False
+    return False
+
+
 def annotation(
     role: str,
     content: str = "",
