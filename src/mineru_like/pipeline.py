@@ -30,6 +30,7 @@ from .presentation import Annotation, unclear
 from .result import Block, DocumentResult, Page, transform_markup
 from .schemas import cross_page_schema, layout_schema, structured_schema
 from .server_logging import record_diagnostic
+from .visual_filter import filter_tiny_images, prune_filtered_assets
 
 T = TypeVar("T")
 
@@ -1208,6 +1209,7 @@ class Pipeline:
 
         restore_heading_roles(result.pages, result.diagnostics)
         furniture_projection(result.pages, result.diagnostics)
+        prune_filtered_assets(result)
         return result
 
     async def _page(
@@ -1407,6 +1409,7 @@ class Pipeline:
                 )
             )
         blocks = associate_captions(blocks)
+        blocks = filter_tiny_images(blocks, idx, diagnostics)
         if self.settings.captioning and any(
             b.image_source and b.metadata.get("category") in IMAGES for b in blocks
         ):
