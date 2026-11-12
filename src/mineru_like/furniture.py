@@ -197,6 +197,8 @@ def furniture_projection(
     output: dict[tuple[int, int], str] = {}
     for page in pages:
         for index, block in enumerate(page.blocks):
+            if re.match(r"^ {0,3}#{1,6}(?:[ \t]+|$)", block.content):
+                continue
             role = str(block.metadata.get("category", block.type))
             explicit = role in {"header", "footer"}
             if explicit:

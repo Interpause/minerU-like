@@ -209,6 +209,27 @@ def test_exact_and_inferred_furniture_threshold_and_structured_retention() -> No
     assert DocumentResult(_pages(["Stable"] * 5, "text")).markdown().count("Stable") == 1
 
 
+@pytest.mark.parametrize("role", ["header", "footer", "text", "content"])
+@pytest.mark.parametrize("heading", ["# Heading", "###### Heading", "   ## Heading", "##"])
+def test_explicit_markdown_heading_is_never_furniture(role: str, heading: str) -> None:
+    box = (0.1, 0.96, 0.9, 0.99) if role == "footer" else (0.1, 0.01, 0.9, 0.035)
+    pages = _pages([heading] * 5, role, box=box)
+    diagnostics = []
+    assert furniture_projection(pages, diagnostics) == {}
+    assert diagnostics == []
+    result = DocumentResult(pages)
+    assert result.markdown().count(heading) == 5
+    assert "Running" not in result.markdown()
+    assert [p["blocks"][0]["content"] for p in result.structured()["pages"]] == [heading] * 5
+
+
+@pytest.mark.parametrize(
+    "text", ["#hashtag", "####### Literal", "Title # word", "```\n## code\n```"]
+)
+def test_literal_hashes_do_not_disable_furniture_collapse(text: str) -> None:
+    assert DocumentResult(_pages([text] * 3)).markdown().count(text) == 1
+
+
 def test_coverage_gaps_odd_even_offsets_and_roman_numbering() -> None:
     result = DocumentResult(_pages(["Odd", "Even", "Odd", "Even", "Odd", "Even", "Other"]))
     assert result.markdown().count("[Running header: Odd]") == 3
