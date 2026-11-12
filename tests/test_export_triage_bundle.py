@@ -24,6 +24,12 @@ def run_export(data: Path, output: Path, *ids: str) -> subprocess.CompletedProce
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
+def member_bytes(archive: tarfile.TarFile, name: str) -> bytes:
+    member = archive.extractfile(name)
+    assert member is not None, f"missing file member: {name}"
+    return member.read()
+
+
 @pytest.fixture
 def data(tmp_path: Path) -> Path:
     root = tmp_path / "data"
@@ -94,10 +100,10 @@ def test_cli_exports_only_selected_material_and_preserves_sources(
             "logs/server.jsonl",
             "logs/issues.jsonl.1",
         }
-        manifest = json.load(archive.extractfile("manifest.json"))
-        result_bytes = archive.extractfile("outputs/out1.zip").read()
-        upload_bytes = archive.extractfile("uploads/file1").read()
-        log = archive.extractfile("logs/server.jsonl").read().decode()
+        manifest = json.loads(member_bytes(archive, "manifest.json"))
+        result_bytes = member_bytes(archive, "outputs/out1.zip")
+        upload_bytes = member_bytes(archive, "uploads/file1")
+        log = member_bytes(archive, "logs/server.jsonl").decode()
         serialized = json.dumps(manifest)
     job = manifest["jobs"][0]
     assert job["result_sha256"] == hashlib.sha256(result_bytes).hexdigest()
@@ -119,7 +125,7 @@ def test_pruned_inputs_and_missing_logs_reported(data: Path, tmp_path: Path) -> 
     result = run_export(data, output, "job1", "job2")
     assert result.returncode == 0, result.stderr
     with tarfile.open(output, "r:xz") as archive:
-        manifest = json.load(archive.extractfile("manifest.json"))
+        manifest = json.loads(member_bytes(archive, "manifest.json"))
     assert set(manifest["missing_optional"]) == {
         "uploads/file2",
         "logs/server.jsonl",
