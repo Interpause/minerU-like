@@ -12,6 +12,14 @@ Structured page coverage counts dark foreground and contrast edges, discounting 
 
 Recovery crops retain bounded context and padding while guarding neighboring regions. Padding uses estimated effective pixels when the backend geometry is known; otherwise it uses submitted image dimensions and the effective backend resolution remains unknown. Each region receives at most two distinct views, with no identical retries. If a formula remains unreadable, delivery uses a concise general placeholder such as `[Unclear formula; pg 1, approx. middle-right; zoom if possible.]`, without guessed content or exact coordinates. Detailed recovery evidence belongs in sidecar diagnostics and logs; the unchanged plugin does not provide a warning UI for it. Required processing failures remain errors; see [failure and fallback boundaries](#failure-and-fallback-boundaries) for optional improvements and current format-specific differences.
 
+Advanced verification diagnostics distinguish the initial text/formula comparison
+from the final recovery outcome. A resolved initial disagreement is informational;
+unresolved corroboration remains a warning and may retain a correct initial
+reading. Neither agreement nor recovery proves transcription accuracy. Page
+summaries retain the initial disagreement regions and list resolved and unresolved
+regions; raw readings remain in diagnostic sidecars. These diagnostics do not add
+reader warnings or change the comparison, recovery or content-acceptance policy.
+
 PDF and image parsing uses PDFium/Pillow plus Ovis. Images include PNG, JPEG, WebP, GIF, BMP, TIFF and JP2; multi-frame inputs retain their frames. Native conversion uses DocVortex 0.6.13 for DOC/DOCX, PPT/PPTX, XLS/XLSX, RTF, ODT/ODS/ODP, HTML/HTM/SHTML, MHTML/MHT, EPUB, OFD, CSV and TSV. Native equations are retained when conversion succeeds; extracted raster content receives visual enrichment. Optional LibreOffice rendering supplies missing or questionable Office visual evidence. Extracted SVG assets are rasterized for inference while retaining their originals; inline SVG in HTML/EPUB is currently rejected because its preservation through native conversion cannot be verified.
 
 Generated regression fixtures exercise DOCX, PPTX, XLSX, RTF, ODT, ODS, ODP, EPUB, HTML variants, MHTML variants, CSV and TSV. Legacy DOC/PPT/XLS and OFD use the same native adapter but have not yet been verified with representative real files. Complex Office drawing fidelity, severe camera perspective, dense tiny mathematics and unusual nested objects need further corpus validation. Source-object inventory checks are conservative safeguards rather than proof of complete conversion.

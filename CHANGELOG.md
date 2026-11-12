@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Associate source captions with figures and tables using conservative geometry instead of image adjacency. Preserve full text and above/below placement; retain ambiguous captions as standalone content.
+- Separate Advanced's initial text/formula disagreement from final recovery outcomes in diagnostics. Resolved differences are informational; unresolved corroboration does not establish an incorrect transcription. Preserve raw evidence, inference calls and content-acceptance policy.
+- Validation for caption association and diagnostic outcomes: **360 passed, 12 skipped** in the normal suite; Ruff checks on owned source/tests/scripts and advisory typing pass. Six saved source-caption regions replay to the expected owners without inference. A focused check of the unchanged plugin accepts the additive source-caption `before` field; the full plugin lifecycle, host Zotero and CUDA checks remain unverified.
 - Replace exhaustive running-furniture page lists with local presentation: omit confirmed redundant counters, retain differing printed labels on their page, and repeat genuine furniture only when a new consecutive run begins. Restore misclassified visual headings using title geometry supported by three other physical pages, retaining original classifications in metadata.
 - Use `[view_src_img]` and a shared caption-reliability cue for photos and diagrams. Preserve ordinary source-image links for Markdown/HTML images inside fallback text as well as dedicated figures and tables, so plugin embed stripping does not erase their only readable reference.
 - Avoid false structured-page rejection from uniform dark edge banners while preserving contrast from white text and coverage of solid body graphics. Log coverage measurements and distinguish missing, ambiguous, low-overlap and empty generated-caption matches. Official prompts, generation policies and semantic graphic-replacement checks remain unchanged.

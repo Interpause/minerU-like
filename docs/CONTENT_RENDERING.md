@@ -33,6 +33,17 @@ These are example/wrapper policies. No mandatory 16,384-token ceiling was found 
 
 ## Reader presentation
 
+Source captions classified as `figure_title` attach to nearby figures or tables
+only when valid page geometry clearly favors one owner. Matching requires
+horizontal overlap, a small vertical gap and no intervening content in that
+column. Close competing owners, overlapping regions and missing geometry leave
+the caption standalone. Attached captions retain their full text and their
+position above or below the owner in Markdown; structured source-caption objects
+include a `before` boolean alongside `content`. The unchanged plugin accepts
+these objects but discards the extra placement field in its legacy structured
+adapter; Markdown retains the placement. This association does not repair model
+transcription or classification errors.
+
 `presentation.py` owns complete annotations, including brackets, separators, asset link syntax and cues. Callers provide semantic intent and unlabelled content. Typical output:
 
 ```markdown
