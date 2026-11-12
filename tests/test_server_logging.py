@@ -155,6 +155,51 @@ def test_quality_diagnostics_keep_measurements_without_raw_content(
     assert all("raw" not in item and "bbox" not in item for item in details)
 
 
+@pytest.mark.parametrize(
+    "initial_status,status,expected_level",
+    [
+        ("agreed", "agreed", logging.INFO),
+        ("disputed", "resolved", logging.INFO),
+        ("disputed", "unresolved", logging.WARNING),
+        ("agreed", "unresolved", logging.WARNING),
+    ],
+)
+def test_verification_severity_uses_final_corroboration_and_keeps_initial_outcome(
+    caplog: pytest.LogCaptureFixture, initial_status: str, status: str, expected_level: int
+) -> None:
+    with caplog.at_level(logging.INFO, logger="mineru_like.server_logging"):
+        record_diagnostic(
+            {
+                "stage": "advanced_verification",
+                "page_idx": 2,
+                "initial_status": initial_status,
+                "status": status,
+                "comparison_scope": "text_and_formulas",
+                "regions": [1] if initial_status == "disputed" else [],
+                "resolved_regions": [1] if status == "resolved" else [],
+                "unresolved_regions": [1] if status == "unresolved" else [],
+                "reason": "corroboration remains unresolved; transcription may still be correct"
+                if status == "unresolved"
+                else "",
+                "corroboration": "unresolved" if status == "unresolved" else status,
+                "content_retained": True,
+                "raw": "PRIVATE_SOURCE_TEXT",
+                "initial": "PRIVATE_INITIAL_READING",
+                "independent": "PRIVATE_INDEPENDENT_READING",
+                "targeted": "PRIVATE_TARGETED_READING",
+            }
+        )
+    record = caplog.records[-1]
+    assert record.levelno == expected_level
+    details = getattr(record, "details")
+    assert details["initial_status"] == initial_status and details["status"] == status
+    assert details["comparison_scope"] == "text_and_formulas"
+    assert details["resolved_regions"] == ([1] if status == "resolved" else [])
+    assert details["unresolved_regions"] == ([1] if status == "unresolved" else [])
+    assert details["content_retained"] is True and details["page"] == 3
+    assert not {"raw", "initial", "independent", "targeted"} & details.keys()
+
+
 def test_rejected_upload_names_document_without_logging_request_body(tmp_path: Path) -> None:
     with TestClient(create_app(Settings(data_dir=tmp_path, max_upload_bytes=1))) as client:
         response = client.post("/v1/uploads", json={"filename": "large.pdf", "bytes": 4})

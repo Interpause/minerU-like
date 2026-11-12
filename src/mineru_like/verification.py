@@ -321,6 +321,8 @@ async def _recover(
                 "region": index,
                 "reason": "missing bounds",
                 "initial": original,
+                "corroboration": "unresolved",
+                "content_retained": block.content == original,
             }
         )
         return
@@ -471,6 +473,15 @@ async def _recover(
             "initial": original,
             "independent": expected,
             "targeted": candidate,
+            **(
+                {
+                    "reason": "corroboration remains unresolved; initial reading may still be correct",
+                    "corroboration": "unresolved",
+                    "content_retained": block.content == original,
+                }
+                if status == "unresolved"
+                else {}
+            ),
         }
     )
 
@@ -489,6 +500,7 @@ async def verify_page(
     """Align a separate reading, then inspect disputed and resolution-risk blocks."""
     from .pipeline import PROMPTS
 
+    diagnostic_start = len(diagnostics)
     try:
         independent = await pipeline._infer_valid(
             [Path(imagepath)],
@@ -506,6 +518,9 @@ async def verify_page(
                 "stage": "advanced_verification",
                 "status": "unresolved",
                 "reason": "independent reading unavailable",
+                "initial_status": "unavailable",
+                "corroboration": "unresolved",
+                "comparison_scope": "text_and_formulas",
             }
         )
         return await verify_suspicious_regions(
@@ -542,6 +557,8 @@ async def verify_page(
                     "status": "unresolved",
                     "region": index,
                     "reason": "native content preserved",
+                    "corroboration": "unresolved",
+                    "content_retained": True,
                 }
             )
             continue
@@ -593,12 +610,34 @@ async def verify_page(
         excluded=set(differences),
         assets=assets,
     )
+    outcomes = {
+        item["region"]: item["status"]
+        for item in diagnostics[diagnostic_start:]
+        if item.get("page_idx") == page.page_idx
+        and item.get("stage") in {"advanced_region", "standard_region"}
+        and item.get("status") in {"recovered", "confirmed", "unresolved"}
+        and "region" in item
+    }
+    unresolved = sorted(index for index, status in outcomes.items() if status == "unresolved")
+    resolved = sorted(index for index, status in outcomes.items() if status != "unresolved")
     diagnostics.append(
         {
             "page_idx": page.page_idx,
             "stage": "advanced_verification",
-            "status": "disputed" if differences else "agreed",
+            "status": "unresolved" if unresolved else "resolved" if differences else "agreed",
+            "initial_status": "disputed" if differences else "agreed",
+            "comparison_scope": "text_and_formulas",
             "regions": sorted(differences),
+            "resolved_regions": resolved,
+            "unresolved_regions": unresolved,
+            **(
+                {
+                    "reason": "corroboration remains unresolved; this does not establish incorrect transcription",
+                    "corroboration": "unresolved",
+                }
+                if unresolved
+                else {}
+            ),
         }
     )
     return page

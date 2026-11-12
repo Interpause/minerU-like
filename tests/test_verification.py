@@ -92,6 +92,61 @@ async def test_formatting_does_not_trigger_recovery(context: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "independent,targeted,expected,initial_status,final_status",
+    [
+        ("AI helps artists", "", "AI helps artists", "agreed", "agreed"),
+        (
+            "AI supports artists",
+            "AI supports artists",
+            "AI supports artists",
+            "disputed",
+            "resolved",
+        ),
+        ("Al helps artists", "AI helps artists", "AI helps artists", "disputed", "unresolved"),
+    ],
+)
+async def test_page_verification_reports_final_corroboration_without_changing_recovery(
+    context: Path,
+    independent: str,
+    targeted: str,
+    expected: str,
+    initial_status: str,
+    final_status: str,
+) -> None:
+    original = "AI helps artists"
+    page = Page(0, [Block("text", original, bbox=(0, 0, 1, 1))])
+    pipeline = Pipeline(independent, targeted)
+    diagnostics: list[Diagnostic] = [
+        {"page_idx": 0, "stage": "advanced_region", "status": "unresolved", "region": 7}
+    ]
+    await verify_page(pipeline, page, context, diagnostics)
+    assert page.blocks[0].content == expected
+    assert pipeline.stages == (
+        ["advanced_markdown"]
+        if initial_status == "agreed"
+        else ["advanced_markdown", "advanced_region"]
+    )
+    summary = diagnostics[-1]
+    assert summary["initial_status"] == initial_status
+    assert summary["status"] == final_status
+    assert summary["comparison_scope"] == "text_and_formulas"
+    assert summary["regions"] == ([] if initial_status == "agreed" else [0])
+    assert summary["resolved_regions"] == ([0] if final_status == "resolved" else [])
+    assert summary["unresolved_regions"] == ([0] if final_status == "unresolved" else [])
+    if initial_status == "disputed":
+        region = diagnostics[-2]
+        assert region["initial"] == original
+        assert region["independent"] == independent
+        assert region["targeted"] == targeted
+        if final_status == "unresolved":
+            assert region["content_retained"] is True
+            assert region["corroboration"] == "unresolved"
+            assert "may still be correct" in region["reason"]
+            assert page.blocks[0].metadata["verification"]["status"] == "unresolved"
+
+
+@pytest.mark.asyncio
 async def test_disputed_formula_only_recovers_target(context: Path) -> None:
     pipeline = Pipeline(r"Intro $x-y$ end", r"$$x-y$$")
     page = Page(
@@ -323,6 +378,32 @@ async def test_advanced_checks_agreeing_risky_formula(context: Path) -> None:
     await verify_page(pipeline, page, context, [])
     assert pipeline.stages == ["advanced_markdown", "standard_region"]
     assert page.blocks[0].metadata["verification"]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_initial_page_agreement_does_not_hide_unresolved_targeted_corroboration(
+    context: Path,
+) -> None:
+    pipeline = Pipeline("$x+y$", "$$x-y$$")
+    page = Page(
+        0,
+        [
+            Block(
+                "equation",
+                "$x+y$",
+                bbox=(0, 0, 1, 1),
+                metadata={"resolution_risk": {"minimum_symbol_pixels": 5}},
+            )
+        ],
+    )
+    diagnostics: list[Diagnostic] = []
+    await verify_page(pipeline, page, context, diagnostics)
+    assert pipeline.stages == ["advanced_markdown", "standard_region"]
+    assert page.blocks[0].content == "$x+y$"
+    assert diagnostics[-1]["initial_status"] == "agreed"
+    assert diagnostics[-1]["status"] == "unresolved"
+    assert diagnostics[-1]["regions"] == []
+    assert diagnostics[-1]["unresolved_regions"] == [0]
 
 
 @pytest.mark.asyncio
