@@ -4,10 +4,10 @@ host = "127.0.0.1"
 port = 8000
 captioning = true
 cross_page_tables = true
-render_dpi = 200
-max_image_side = 2880
-advanced_render_dpi = 300
-advanced_max_image_side = 4096
+render_dpi = 300
+max_image_side = 4096
+advanced_render_dpi = 600
+advanced_max_image_side = 8192
 
 [libreoffice]
 mode = "auto" # off, auto, system, flatpak

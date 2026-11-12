@@ -95,10 +95,10 @@ class Settings(BaseModel):
     queue_size: int = Field(8, ge=1, deprecated=True)
     retention_hours: float = Field(24, gt=0)
     upload_retention_hours: float = Field(1, gt=0)
-    render_dpi: int = Field(200, ge=72, le=600)
-    advanced_render_dpi: int = Field(300, ge=72, le=600)
-    advanced_max_image_side: int = Field(4096, ge=512)
-    max_image_side: int = Field(2880, ge=512)
+    render_dpi: int = Field(300, ge=72, le=600)
+    advanced_render_dpi: int = Field(600, ge=72, le=600)
+    advanced_max_image_side: int = Field(8192, ge=512)
+    max_image_side: int = Field(4096, ge=512)
     preview_side: int = Field(1280, ge=256)
     captioning: bool = True
     cross_page_tables: bool = True
