@@ -24,6 +24,11 @@ priority over latency; deployment targets a 6 GB GPU with useful headroom.
 
 ## Working defaults
 
+Use these guides for working rules, maintained documentation for current behavior,
+and TODO for remaining work. Treat old plans and private investigation reports as
+dated evidence; check their status and later decisions before reusing them.
+Task-specific approvals and deferrals do not become permanent project policy.
+
 Use judgment within these principles. Execute clear fixes and routine choices
 without another approval round. For substantial behavior or architecture choices,
 present the alternatives, consequences and a recommendation with enough context
